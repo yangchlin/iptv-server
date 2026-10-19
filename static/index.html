@@ -1,0 +1,587 @@
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="shortcut icon" href="/static/favicon.svg">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f5f5f5;--card:#fff;--primary:#1890ff;--danger:#ff4d4f;--success:#52c41a;--warning:#faad14;--text:#333;--text-secondary:#666;--border:#e8e8e8;--hover:#e6f7ff;--sidebar-w:180px}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.6}
+.container{max-width:1440px;margin:0 auto;padding:12px 16px}
+.header{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:14px 24px;border-radius:12px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px}
+.header h1{font-size:20px;font-weight:600}
+.header .info{font-size:12px;opacity:.8}
+.main-layout{display:flex;gap:12px;min-height:calc(100vh - 110px);overflow:hidden;max-width:100%}
+.tabs{display:flex;flex-direction:column;gap:2px;min-width:var(--sidebar-w);max-width:var(--sidebar-w);flex-shrink:0;flex-grow:0}
+.panel{display:none;background:var(--card);border-radius:12px;padding:20px;border:1px solid var(--border);min-height:400px;flex:1;min-width:0;overflow:auto}
+.panel.active{display:block;min-width:0}
+table{width:100%}
+.tab{padding:10px 14px;background:var(--card);border:1px solid var(--border);border-radius:8px;cursor:pointer;font-size:13px;transition:all .2s;white-space:nowrap;text-align:left}
+.tab:hover{background:var(--hover);border-color:var(--primary)}
+.tab.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:6px 16px;border:1px solid var(--border);border-radius:6px;cursor:pointer;font-size:13px;transition:all .2s;white-space:nowrap;background:#fff}
+.btn:hover{opacity:.85}
+.btn-primary{background:var(--primary);color:#fff;border-color:var(--primary)}
+.btn-danger{background:var(--danger);color:#fff;border-color:var(--danger)}
+.btn-success{background:var(--success);color:#fff;border-color:var(--success)}
+.btn-warning{background:var(--warning);color:#fff;border-color:var(--warning)}
+.btn-sm{padding:3px 10px;font-size:12px}
+.btn-group{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+input,select,textarea{padding:6px 12px;border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;transition:border .2s;width:100%}
+input:focus,select:focus,textarea:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(24,144,255,.2)}
+textarea{resize:vertical;min-height:60px;font-family:monospace}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+th{background:#fafafa;font-weight:600;white-space:nowrap}
+tr:hover{background:#fafafa}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px}
+.badge-success{background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f}
+.badge-danger{background:#fff2f0;color:#ff4d4f;border:1px solid #ffccc7}
+.xml-link{display:flex;gap:8px;align-items:center;padding:10px 16px;background:#f0f5ff;border:1px solid #d6e4ff;border-radius:8px;margin-bottom:16px}
+.xml-link input{flex:1;border:none;background:transparent;font-family:monospace;font-size:13px}
+.xml-link input:focus{box-shadow:none}
+.modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:1000;justify-content:center;align-items:center}
+.modal.active{display:flex}
+.modal-content{background:var(--card);border-radius:12px;padding:24px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto}
+.modal-title{font-size:16px;font-weight:600;margin-bottom:16px}
+.modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+.form-group{margin-bottom:12px}
+.form-group label{display:block;margin-bottom:4px;font-size:13px;font-weight:500}
+.form-row{display:flex;gap:8px;flex-wrap:wrap}
+.form-row>*{flex:1;min-width:120px}
+.download-box{background:#f6ffed;border:1px solid #b7eb8f;border-radius:8px;padding:12px;margin-bottom:16px;max-height:300px;overflow-y:auto;font-family:monospace;font-size:12px;line-height:1.8;white-space:pre-wrap}
+.download-box .info{color:var(--primary)}
+.download-box .success{color:var(--success)}
+.download-box .error{color:var(--danger)}
+.download-box .warn{color:var(--warning)}
+.download-controls{display:flex;gap:8px;margin-bottom:8px}
+.empty{text-align:center;padding:40px;color:var(--text-secondary);font-size:14px}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
+.toolbar .spacer{flex:1}
+.pagination{display:flex;gap:4px;align-items:center;margin-top:8px;flex-wrap:wrap}
+.pagination button{padding:4px 10px;border:1px solid var(--border);border-radius:4px;background:#fff;cursor:pointer;font-size:12px}
+.pagination button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.pagination button:disabled{opacity:.5;cursor:not-allowed}
+.pagination select{padding:3px 6px;width:auto}
+.tab-content-inner{display:none}
+.tab-content-inner.active{display:block}
+.copy-btn{cursor:pointer;padding:2px 8px;background:#f0f5ff;border:1px solid #d6e4ff;border-radius:4px;font-size:12px;transition:all .2s}
+.copy-btn:hover{background:#d6e4ff}
+.search-box{display:flex;gap:8px;margin-bottom:12px}
+.search-box input{flex:1}
+/* 列宽拖拽 - 简洁实现 */
+th{position:relative;border-right:1px solid #e0e0e0}
+th .resize-handle{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:10}
+th .resize-handle::after{content:'';position:absolute;top:20%;left:2px;height:60%;width:2px;background:#d0d0d0;border-radius:1px}
+th .resize-handle:hover::after{background:#222;width:3px}
+th.resize-active{background:#e8f4fd}
+th.resize-active{background:#e6f7ff}
+/* 拖拽上传 */
+.dropzone{border:2px dashed var(--border);border-radius:8px;padding:30px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:12px;background:#fafafa}
+.dropzone:hover,.dropzone.dragover{border-color:var(--primary);background:var(--hover)}
+.dropzone .icon{font-size:40px;margin-bottom:8px}
+.dropzone .text{font-size:14px;color:var(--text-secondary)}
+.dropzone .hint{font-size:12px;color:var(--text-secondary);margin-top:4px}
+/* 全局进度条 */
+#globalProgress{display:block;margin-bottom:12px;padding:0}
+#globalProgress .gp-bar-wrap{background:#e8e8e8;border-radius:6px;height:8px;overflow:hidden;position:relative}
+#globalProgress .gp-bar-fill{height:100%;background:linear-gradient(90deg,var(--primary),#69c0ff);border-radius:6px;transition:width .3s ease;width:0%}
+#globalProgress .gp-info{display:flex;justify-content:space-between;align-items:center;margin-top:4px;font-size:12px;flex-wrap:wrap}
+#globalProgress .gp-info .gp-title{font-weight:600;color:var(--text);font-size:13px}
+#globalProgress .gp-info .gp-detail{color:var(--text-secondary);font-size:11px}
+#globalProgress .gp-info .gp-pct{color:var(--primary);font-weight:600;font-size:13px}
+#globalProgress .gp-close{color:#999;cursor:pointer;font-size:16px;line-height:1;padding:0 4px}
+#globalProgress .gp-close:hover{color:var(--danger)}
+
+/* ===== ku9apps 样式 ===== */
+.build-bar{background:var(--card);border-radius:12px;padding:10px 20px;border:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:8px 0}
+.build-bar .progress-wrap{flex:1;min-width:120px;height:8px;background:#e8e8e8;border-radius:6px;overflow:hidden}
+.build-bar .progress-fill{height:100%;background:linear-gradient(90deg,var(--primary),#69c0ff);border-radius:6px;transition:width .3s ease;width:0%}
+.build-bar .progress-text{font-size:12px;color:var(--text-secondary);min-width:36px;white-space:nowrap}
+.sub-tabs{display:flex;gap:4px;flex-wrap:wrap;margin:12px 0 0 0}
+.sub-tab{padding:6px 14px;border-radius:6px;cursor:pointer;font-size:13px;transition:all .2s;background:#f5f5f5;border:1px solid transparent}
+.sub-tab:hover{background:var(--hover);border-color:var(--primary)}
+.sub-tab.active{background:var(--primary);color:#fff;border-color:var(--primary)}
+.config-block{border:1px solid var(--border);border-radius:10px;margin-bottom:16px;overflow:hidden}
+.config-block .block-header{padding:10px 16px;background:#fafafa;font-size:14px;font-weight:600;border-bottom:1px solid var(--border);color:var(--text)}
+.config-block table{width:100%;border-collapse:collapse;margin:0}
+.config-block th{padding:8px 12px;text-align:center;font-size:12px;color:var(--text-secondary);background:#f5f5f5;border-bottom:1px solid var(--border);font-weight:500}
+.config-block td{padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+.config-block tr:last-child td{border-bottom:none}
+.config-block tr:hover{background:var(--hover)}
+.switch-btn{display:inline-flex;align-items:center;gap:4px;padding:4px 16px;border-radius:6px;font-size:12px;cursor:pointer;border:1px solid var(--border);transition:all .2s;user-select:none;min-width:82px;justify-content:center}
+.switch-btn.on{background:var(--success);color:#fff;border-color:var(--success)}
+.switch-btn.off{background:var(--danger);color:#fff;border-color:var(--danger)}
+.config-select{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;cursor:pointer;min-width:160px;width:auto}
+.config-select:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(24,144,255,.2)}
+.config-input{padding:4px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;outline:none;width:100%}
+.config-input:focus{border-color:var(--primary);box-shadow:0 0 0 2px rgba(24,144,255,.2)}
+.sub-panel{display:none;padding-top:16px}
+.sub-panel.active{display:block}
+.download-table{width:100%;border-collapse:collapse;margin-top:8px}
+.download-table th,.download-table td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:13px}
+.download-table th{background:#fafafa;font-weight:600;white-space:nowrap}
+.download-table tr:hover{background:var(--hover)}
+.addr-entries{display:flex;flex-direction:column;gap:2px;width:100%}
+.addr-entry{display:flex;align-items:center;width:100%;overflow:hidden}
+.addr-entry .saved-text{cursor:pointer;font-size:13px;padding:2px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:22px;line-height:22px;flex:1;min-width:0;max-width:100%}
+.addr-entry .saved-text:hover{color:var(--primary)}
+.addr-entry .del-btn{flex-shrink:0}
+.addr-entry input{width:100%;max-width:100%;box-sizing:border-box}
+.new-input{border:2px solid var(--primary) !important}
+.select-highlight{background:#fffbe6 !important}
+#addrTable5{width:100%;border-collapse:collapse;margin:0;table-layout:fixed}
+#addrTable5 td{padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle;overflow:hidden;max-width:0}
+#addrTable5 tr:last-child td{border-bottom:none}
+#addrTable5 th:nth-child(1),#addrTable5 td:nth-child(1){width:28%}
+#addrTable5 th:nth-child(2),#addrTable5 td:nth-child(2){width:44%}
+#addrTable5 th:nth-child(3),#addrTable5 td:nth-child(3){width:28%}
+#addrTable3 td:first-child{width:28%}
+#addrTable3 td:last-child{width:72%}
+#addrTable5 tr:last-child td{border-bottom:none}
+#addrTable3{border-top:none;table-layout:fixed}
+#addrTable3 thead{display:none}
+#addrTable3 tr:first-child td{border-top:1px solid var(--border)}
+/* ===== addrTable4（表3）：快捷菜单勾选 ===== */
+#addrTable4{border-top:none;width:100%;border-collapse:collapse;margin:0;table-layout:fixed}
+#addrTable4 thead{display:none}
+#addrTable4 td{padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px;vertical-align:middle}
+#addrTable4 tr:first-child td{border-top:1px solid var(--border)}
+#addrTable4 .addr4-label{width:37%;min-width:80px;font-weight:500;color:var(--text);vertical-align:middle;padding:12px 10px}
+#addrTable4 .addr4-row{display:grid;grid-template-columns:repeat(7,90px);gap:4px;justify-items:start}
+#addrTable4 .addr4-checkbox{display:inline-flex;align-items:center;gap:0;cursor:pointer;padding:3px 4px;border-radius:4px;transition:background .15s;white-space:nowrap;font-size:13px;justify-content:flex-start;width:100%;box-sizing:border-box}
+#addrTable4 tr:hover{background:transparent}
+#addrTable4 .addr4-checkbox:hover{background:var(--hover)}
+#addrTable4 .addr4-checkbox input{width:13px;height:13px;margin:0;cursor:pointer;flex-shrink:0;flex-grow:0}
+.preview-img{max-width:80px;max-height:80px;border-radius:6px;border:1px solid var(--border);object-fit:contain;cursor:pointer}
+@media(max-width:768px){.form-row>*{min-width:100%}.header h1{font-size:16px}.panel{padding:12px}.main-layout{flex-direction:column}.tabs{flex-direction:row;min-width:100%;max-width:100%;overflow-x:auto;gap:2px}.tab{font-size:12px;padding:8px 10px;white-space:nowrap;flex-shrink:0}.panel{border-radius:8px}}
+</style>
+<title>IPTV管理系统</title>
+</head>
+<body>
+<!-- 登录遮罩（苹果风） -->
+<style>
+#loginOverlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(10,10,20,.65);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);z-index:9999;display:flex;justify-content:center;align-items:center}
+#loginOverlay.hidden{display:none}
+#loginBox{background:#F5F5F7;border-radius:20px;padding:44px 40px;width:380px;max-width:90vw;box-shadow:0 24px 80px rgba(0,0,0,.45);border:1px solid rgba(255,255,255,.6)}
+#loginBox .login-logo{display:flex;justify-content:center;margin-bottom:18px}
+#loginBox .login-logo svg{width:56px;height:56px}
+#loginBox h2{text-align:center;margin-bottom:8px;color:#1D1D1F;font-size:22px;font-weight:700;letter-spacing:.5px}
+#loginBox .login-sub{text-align:center;color:#6E6E73;font-size:13px;margin-bottom:28px}
+#loginBox .form-g{margin-bottom:16px}
+#loginBox .form-g label{display:block;margin-bottom:6px;font-size:13px;color:#424245;font-weight:500}
+#loginBox .form-g input{width:100%;padding:11px 14px;border:1px solid #D2D2D7;border-radius:10px;font-size:14px;outline:none;transition:all .2s;background:#fff;color:#1D1D1F}
+#loginBox .form-g input:focus{border-color:#007AFF;box-shadow:0 0 0 3px rgba(0,122,255,.18)}
+#loginBox .login-btn{width:100%;padding:12px;background:#007AFF;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:600;cursor:pointer;margin-top:6px;transition:all .2s}
+#loginBox .login-btn:hover{background:#3395FF}
+#loginBox .login-btn:active{transform:scale(.98)}
+#loginBox .login-error{color:#FF3B30;font-size:13px;text-align:center;margin-top:10px;display:none}
+#loginBox .login-loading{text-align:center;color:#6E6E73;font-size:13px;margin-top:10px;display:none}
+</style>
+</style>
+<div id="loginOverlay">
+<div id="loginBox">
+<div class="login-logo"><svg viewBox="0 0 24 24" fill="currentColor" style="color:#007AFF"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z" fill="#fff"/></svg></div>
+<h2>IPTV 管理系统</h2>
+<div class="login-sub">请登录后继续使用</div>
+<div class="form-g"><label>用户名</label><input id="loginUser" value="666" onkeydown="if(event.key==='Enter')doLogin()"></div>
+<div class="form-g"><label>密码</label><input id="loginPass" type="password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+<button class="login-btn" onclick="doLogin()">登 录</button>
+<div class="login-error" id="loginError"></div>
+<div class="login-loading" id="loginLoading">验证中...</div>
+</div>
+</div>
+
+<div class="container">
+<div class="header">
+<div><h1>📺 IPTV管理系统</h1><div class="info" id="statusInfo">正在加载...</div></div>
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<span id="clock" style="font-size:13px;opacity:.8"></span>
+</div>
+</div>
+
+<!-- 全局进度条 -->
+<div id="globalProgress">
+<div class="gp-bar-wrap"><div class="gp-bar-fill" id="gpFill"></div></div>
+<div class="gp-info">
+ <span><span class="gp-title" id="gpTitle" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block"></span></span>
+ <span class="gp-pct" id="gpPct">0%</span>
+</div>
+</div>
+
+<div class="main-layout">
+<div class="tabs" id="tabs">
+<div class="tab active" data-tab="dashboard">📊 仪表盘</div>
+<div class="tab" data-tab="channels">📋 频道管理</div>
+<div class="tab" data-tab="epg">🌐 外部EPG</div>
+<div class="tab" data-tab="epgchannels">📋 EPG管理</div>
+<div class="tab" data-tab="m3u">📺 M3U管理</div>
+<div class="tab" data-tab="icons">🖼️ 频道台标</div>
+<div class="tab" data-tab="ku9apps">📲 IPTV软件</div>
+<div class="tab" data-tab="portmap">🔌 端口映射</div>
+<div class="tab" data-tab="proxy">🌐 代理服务</div>
+<div class="tab" data-tab="sharedir">📁 共享目录</div>
+<div class="tab" data-tab="auth">👤 账户密码</div>
+</div>
+
+<div style="flex:1">
+
+<!-- ============ 仪表盘 ============ -->
+<div class="panel active" id="panel-dashboard">
+<div class="xml-link" id="xmlLinkBox">
+<span>📄 XML 直链:</span>
+<input type="text" id="xmlLink" readonly value="加载中..." onclick="this.select();document.execCommand('copy');showToast('✅ 已复制到剪贴板','success')" style="cursor:pointer;flex:1">
+<label style="font-size:11px;white-space:nowrap;display:flex;align-items:center;gap:2px;cursor:pointer">
+ <input type="checkbox" id="xmlGzToggle" onchange="toggleXmlGz()"> .xml.gz
+</label>
+</div>
+
+<div class="btn-group">
+<button class="btn btn-primary" onclick="startDownload()">⬇️ 开始下载(今明后)</button>
+<button class="btn btn-warning" onclick="downloadHistory()">📅 下载过往(6天)</button>
+<button class="btn" style="background:#722ed1;color:#fff" onclick="extractEpgToJson()">🌐 外部EPG提取</button>
+<button class="btn btn-success" onclick="buildXml()">📄 生成XML</button>
+<button class="btn" style="background:#786fa6;color:#fff" onclick="manualCleanup()">🗑️ 清理过期</button>
+</div>
+
+
+
+<div style="margin-top:16px">
+<h3 style="margin-bottom:8px">📊 系统概览</h3>
+<div id="dashboardStats" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px">
+<div style="padding:16px;background:#f0f5ff;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:var(--primary)" id="statChannels">-</div><div style="font-size:12px;color:var(--text-secondary)">频道总数（含EPG提取）</div></div>
+<div style="padding:16px;background:#f6ffed;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:var(--success)" id="statJsonFiles">-</div><div style="font-size:12px;color:var(--text-secondary)">JSON文件数</div></div>
+<div style="padding:16px;background:#fff7e6;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:var(--warning)" id="statIcons">-</div><div style="font-size:12px;color:var(--text-secondary)">台标总数</div></div>
+<div style="padding:16px;background:#fff0f6;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:#eb2f96" id="statXmlSize">-</div><div style="font-size:12px;color:var(--text-secondary)">XML文件大小</div></div>
+<div id="webPlayerCard" style="padding:16px;background:#1b1e2b;border-radius:8px;text-align:center;cursor:pointer;position:relative;min-height:60px;display:flex;flex-direction:column;justify-content:center" onclick="downloadExe()" title="下载 Windows 电脑播放器 (EXE)">
+  <div style="font-size:20px;font-weight:700;color:#ffffff">电脑播放</div>
+  <div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:4px">下载 Windows 版播放器 (EXE)</div>
+</div>
+</div>
+</div>
+
+<div style="margin-top:16px">
+<h3 style="margin-bottom:8px">⏰ 定时任务</h3>
+<div id="cronStatus" style="padding:12px;background:#fafafa;border-radius:8px;border:1px solid var(--border)">
+<form id="cronForm" style="display:flex;gap:12px;align-items:center;flex-wrap:wrap" onsubmit="return saveCronSettings()">
+<label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-weight:normal;white-space:nowrap;flex-shrink:0">启用 <input type="checkbox" id="cronEnabled" checked style="width:auto;flex-shrink:0"></label>
+<label style="display:inline-flex;align-items:center;gap:4px">每日时间 <input type="time" id="cronTime" value="07:30" style="width:120px"></label>
+<button class="btn btn-primary btn-sm" type="submit">💾 保存</button>
+</form>
+</div>
+</div>
+
+<!-- ============ 日志（嵌入仪表盘） ============ -->
+<div style="margin-top:16px">
+<h3 style="margin-bottom:8px">📝 系统日志</h3>
+<div style="margin-bottom:8px" id="dashLogCategories"></div>
+<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+ <span style="font-size:12px;color:var(--text-secondary)">分类筛选：</span>
+ <button class="btn btn-sm" data-dashlogcat="下载" onclick="switchLogCategory('下载')">⬇️ 下载</button>
+ <button class="btn btn-sm" data-dashlogcat="EPG" onclick="switchLogCategory('EPG')">🌐 EPG</button>
+ <button class="btn btn-sm" data-dashlogcat="清理" onclick="switchLogCategory('清理')">🗑️ 清理</button>
+ <button class="btn btn-sm" data-dashlogcat="定时任务" onclick="switchLogCategory('定时任务')">⏰ 定时任务</button>
+ <button class="btn btn-sm" data-dashlogcat="其他" onclick="switchLogCategory('其他')">… 其他</button>
+ <button class="btn btn-sm" data-dashlogcat="失败" onclick="switchLogCategory('失败')" style="color:var(--danger);border-color:#ffccc7">❌ 失败</button>
+ <button class="btn btn-sm btn-primary" data-dashlogcat="全部" onclick="switchLogCategory('全部')">📋 全部</button>
+ <span class="spacer"></span>
+ <span style="font-size:11px;color:var(--text-secondary)" id="dashLogCountInfo"></span>
+</div>
+<div id="dashLogContent" style="background:#1a1a2e;color:#e0e0e0;padding:12px;border-radius:8px;font-family:monospace;font-size:12px;line-height:1.8;height:400px;overflow-y:auto;white-space:pre-wrap"></div>
+<div style="margin-top:8px">
+ <span style="font-size:12px;color:var(--text-secondary)">📁 历史日志文件：</span>
+ <span id="dashLogFileList"></span>
+</div>
+</div>
+</div>
+
+<!-- ============ 频道管理 ============ -->
+<div class="panel" id="panel-channels">
+<div class="toolbar">
+<button class="btn" onclick="exportChannels()">📤 导出</button>
+<button class="btn" onclick="document.getElementById('importFile').click()">📥 导入</button>
+<input type="file" id="importFile" accept=".json" style="display:none" onchange="importChannels(event)">
+<button class="btn btn-warning" onclick="showReplaceUrl()">🔄 替换链接</button>
+<button class="btn btn-danger" onclick="clearAllChannels()">🗑️ 清空所有</button>
+</div>
+
+<div style="overflow-x:auto">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+<select id="pageSize" onchange="sessionStorage.setItem('pageSize',this.value);renderChannels()" style="width:85px">
+<option value="100">100/页</option><option value="500">500/页</option>
+<option value="1000">1000/页</option><option value="5000">5000/页</option>
+</select>
+<div class="pagination" id="channelPaginationTop"></div>
+</div>
+<table id="channelTable" style="table-layout:fixed">
+<thead><tr><th style="width:30px;text-align:center">☰</th><th style="width:144px">频道名称<span class="resize-handle"></span></th><th style="width:81px;text-align:left">TVG-ID<span class="resize-handle"></span></th><th style="width:731px">下载链接<span class="resize-handle"></span></th><th style="width:76px;text-align:center">状态<span class="resize-handle"></span></th><th style="width:111px;text-align:center">操作</th></tr></thead>
+<tbody id="channelBody"></tbody>
+  <tfoot id="channelNewRow" style="display:none">
+   <tr>
+    <td style="text-align:center;color:#ccc">+</td>
+    <td><input id="newChName" placeholder="频道名称..." style="border:none;background:transparent;width:100%" onblur="autoAddChannel()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td style="text-align:center;font-size:11px;color:var(--text-secondary)" id="newChTvgIdDisplay">自动</td>
+    <td><input id="newChUrl" placeholder="下载链接，自动替换日期..." style="border:none;background:transparent;width:100%" oninput="autoDatePlaceholder(this)" onblur="autoAddChannel()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td></td>
+    <td></td>
+   </tr>
+  </tfoot>
+ </table>
+</div>
+<div class="pagination" id="channelPagination"></div>
+<div id="channelEmpty" class="empty" style="display:none">暂无频道，在下方输入频道信息后自动添加</div>
+</div>
+
+<!-- ============ 外部EPG ============ -->
+<div class="panel" id="panel-epg">
+<div style="display:flex;gap:16px;flex-wrap:wrap;align-items:stretch">
+<div style="flex:1;min-width:300px;display:flex;flex-direction:column">
+<h3 style="margin-bottom:8px">📡 EPG 源列表</h3>
+<div class="toolbar">
+<button class="btn btn-primary" onclick="showAddEpgSource()">➕ 添加源</button>
+<button class="btn" onclick="downloadEpg()">⬇️ 下载EPG</button>
+
+</div>
+<div style="overflow-x:auto;overflow-y:auto;max-height:400px;flex:1"><table id="epgSourceTable"><thead><tr><th style="width:30px;text-align:center">☰</th><th style="min-width:60px;text-align:left">URL<span class="resize-handle"></span></th><th style="min-width:110px;text-align:left">备注<span class="resize-handle"></span></th><th style="width:60px;text-align:center">规则<span class="resize-handle"></span></th><th style="width:70px;text-align:center">状态<span class="resize-handle"></span></th><th style="width:100px;text-align:center">操作</th></tr></thead><tbody id="epgSourceBody"></tbody></table></div>
+<div class="pagination" id="epgSourcePagination"></div>
+</div>
+
+<div style="flex:1;min-width:300px;display:flex;flex-direction:column">
+<h3 style="margin-bottom:8px">🔍 搜索外部EPG频道</h3>
+<div class="search-box">
+<div style="flex:1;position:relative;display:flex;align-items:center">
+<input id="epgSearchInput" placeholder="输入频道关键词..." onkeydown="if(event.key==='Enter')searchEpgChannels();event.stopPropagation()" oninput="toggleSearchClear()" style="flex:1;padding-right:28px">
+<span onclick="clearSearchResults()" style="position:absolute;right:6px;cursor:pointer;color:#999;font-size:15px;line-height:1;display:none" id="epgSearchClear">✕</span>
+</div>
+<button class="btn btn-primary btn-sm" onclick="searchEpgChannels()">🔍 搜索</button>
+</div>
+<div style="overflow-x:auto;overflow-y:auto;min-height:370px;flex:1"><table><thead><tr><th style="min-width:90px;text-align:left">来源<span class="resize-handle"></span></th><th style="min-width:120px;text-align:left">频道名称<span class="resize-handle"></span></th><th style="width:50px;text-align:center">规则<span class="resize-handle"></span></th><th style="width:80px;text-align:center;white-space:nowrap">操作</th></tr></thead><tbody id="epgSearchBody"></tbody></table></div>
+<div class="pagination" id="epgSearchPagination"></div>
+</div>
+</div>
+
+<div style="margin-top:16px">
+<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+<h3 style="margin:0">📋 已配置提取记录</h3>
+<span class="spacer" style="flex:1"></span>
+<button class="btn" onclick="exportEpgExtracts()">📤 导出</button>
+<button class="btn" onclick="document.getElementById('extractImportInput').click()">📥 导入</button>
+<input type="file" id="extractImportInput" accept=".json" style="display:none" onchange="importEpgExtracts(event)">
+</div>
+<div style="overflow-x:auto;margin-top:8px"><table id="epgExtractTable" style="table-layout:fixed;width:100%"><thead><tr><th style="width:30px;text-align:center">☰</th><th style="width:159px;text-align:left">频道名称<span class="resize-handle"></span></th><th style="width:99px;text-align:left">TVG-ID<span class="resize-handle"></span></th><th style="width:726px;text-align:left">来源备注<span class="resize-handle"></span></th><th style="width:60px;text-align:center">规则<span class="resize-handle"></span></th><th style="width:100px;text-align:center">操作</th></tr></thead><tbody id="epgExtractBody"></tbody></table></div>
+</div>
+</div>
+
+<!-- ============ EPG管理 ============ -->
+<div class="panel" id="panel-epgchannels">
+<h3 style="margin-bottom:8px">📋 EPG 频道管理</h3>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">此列表控制 XML 生成和 M3U 匹配的下拉选项</p>
+<div class="toolbar">
+<button class="btn" onclick="refreshEpgChannels()">🔄 刷新</button>
+<button class="btn btn-danger" onclick="clearAllEpgChannels()">🗑️ 清空</button>
+</div>
+<div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
+<table id="epgChTable"><thead><tr><th style="width:30px;text-align:center">☰</th><th style="width:188px">频道名称<span class="resize-handle"></span></th><th style="width:95px;text-align:left">TVG-ID<span class="resize-handle"></span></th><th style="width:400px">TVG-NAME<span class="resize-handle"></span></th><th style="width:227px">来源<span class="resize-handle"></span></th><th style="width:109px;text-align:center">状态<span class="resize-handle"></span></th><th style="width:104px;text-align:center">操作</th></tr></thead><tbody id="epgChannelBody"></tbody></table>
+</div>
+</div>
+
+<!-- ============ M3U管理 ============ -->
+<div class="panel" id="panel-m3u">
+<div class="toolbar">
+<button class="btn btn-primary" onclick="showUploadM3u()">📤 上传M3U</button>
+<button class="btn" onclick="showM3uUrlInput()">🔗 直链添加</button>
+<span class="spacer"></span>
+</div>
+<div id="m3uFileList"></div>
+
+<div id="m3uEditor" style="display:none;margin-top:16px">
+<h3 id="m3uEditorTitle" style="margin-bottom:8px">📝 M3U 匹配编辑</h3>
+<div class="toolbar">
+<button class="btn btn-warning" onclick="m3uBatchReplace()">批量替换</button>
+<button class="btn btn-danger" onclick="closeM3uEditor()">关闭</button>
+<button class="btn" onclick="refreshM3uOptions()">刷新选项</button>
+<label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
+ <input type="checkbox" id="m3uMergeCheck" checked onchange="m3uToggleMerge()" style="width:auto;flex-shrink:0"> 合并重复
+</label>
+<label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
+ <input type="checkbox" id="m3uShowGroup" onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道分组
+</label>
+<label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
+ <input type="checkbox" id="m3uShowIcon" onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道图标
+</label>
+<span class="spacer"></span>
+</div>
+<div style="overflow-x:auto"><table id="m3uEditTable" style="table-layout:fixed;width:100%"><thead><tr><th style="width:30px;text-align:center">☰</th><th id="m3uThUrl" style="width:290px">URL / 地址<span class="resize-handle"></span></th><th id="m3uThGroup" style="width:130px;display:none">频道分组<span class="resize-handle"></span></th><th id="m3uThIcon" style="width:130px;display:none">频道图标<span class="resize-handle"></span></th><th style="width:81px;text-align:left">tvg-id<span class="resize-handle"></span></th><th id="m3uThTvgname" style="width:186px">tvg-name<span class="resize-handle"></span></th><th id="m3uThDisplay" style="width:195px">显示名称<span class="resize-handle"></span></th><th id="m3uThMatch" style="width:120px">匹配节目单</th><th style="width:60px;text-align:center">操作</th></tr></thead><tbody id="m3uEditBody"></tbody>
+  <tfoot id="m3uNewRow">
+   <tr>
+    <td style="text-align:center;color:#ccc">+</td>
+    <td id="m3uNewUrlTd"><input id="m3uNewUrl" placeholder="URL地址..." style="border:none;background:transparent;width:100%;font-size:11px" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td id="m3uNewGroupTd" style="display:none"></td>
+    <td id="m3uNewIconTd" style="display:none"></td>
+    <td><input id="m3uNewTvgId" placeholder="tvg-id" style="width:60px;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td><input id="m3uNewTvgName" placeholder="tvg-name" style="width:100%;min-width:100px;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td><input id="m3uNewDispName" placeholder="显示名称" style="border:none;background:transparent;width:100%" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td style="text-align:center"><span class="badge badge-success">新建</span></td>
+    <td></td>
+   </tr>
+  </tfoot></table></div>
+</div>
+</div>
+
+<!-- ============ 频道台标 ============ -->
+<div class="panel" id="panel-icons">
+<h3 style="margin-bottom:8px">🖼️ 频道台标管理</h3>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">上传频道台标图片，支持 PNG/JPG/SVG/GIF/WebP，外网可访问</p>
+<div class="toolbar">
+<button class="btn btn-primary" onclick="showIconUpload()">📤 上传台标</button>
+<button class="btn" onclick="refreshIcons()">🔄 刷新</button>
+</div>
+<div id="iconGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:12px"></div>
+</div>
+
+<!-- ============ IPTV软件 (Ku9) ============ -->
+<div class="panel" id="panel-ku9apps">
+<h3 style="margin-bottom:8px">📲 IPTV软件</h3>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">IPTV软件参数设置</p>
+
+<div class="build-bar">
+<button class="btn btn-success" onclick="ku9BuildApk()">📦 生成APK</button>
+<div class="progress-wrap"><div class="progress-fill" id="ku9Progress" style="width:0%"></div></div>
+<span class="progress-text" id="ku9ProgressText">0%</span>
+<span style="font-size:11px;color:var(--text-secondary)" id="ku9LastBuild"></span>
+<span class="progress-hint" id="ku9ProgressHint" style="font-size:11px;color:var(--text-secondary);display:none">⏳ 正在编译 APK，请耐心等待...</span>
+</div>
+
+<div class="sub-tabs">
+<div class="sub-tab active" data-sub="basic">📋 基础设置</div>
+<div class="sub-tab" data-sub="app">📱 应用设置</div>
+<div class="sub-tab" data-sub="downloads">⬇️ 下载链接</div>
+</div>
+
+<!-- 基础设置 -->
+<div class="sub-panel active" id="sub-basic">
+<div class="config-block">
+<div class="block-header" style="display:flex;justify-content:space-between;align-items:center"><span>🌐 信息填写</span><span style="font-size:12px;color:var(--text-secondary)">以下是APP安装后的默认配置，如无特殊需求请保持默认</span></div>
+<table id="addrTable5">
+<thead><tr><th>名称</th><th>数据</th><th>自定义名称</th></tr></thead>
+<tbody></tbody>
+</table>
+<table id="addrTable3">
+<tbody></tbody>
+</table>
+<table id="addrTable4">
+<tbody></tbody>
+</table>
+</div>
+
+<div class="config-block">
+<div class="block-header">📋 选项选择</div>
+<table id="selectTable">
+<thead><tr><th style="text-align:left;width:998px">名称</th><th style="text-align:center">选项</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+
+<div class="config-block">
+<div class="block-header" style="display:flex;justify-content:space-between;align-items:center"><span>🔘 开关设置</span><span style="font-size:11px;color:var(--text-secondary)">启用=true，禁用=false</span></div>
+<table id="switchTable">
+<thead><tr><th style="text-align:left;width:1091px">名称</th><th style="text-align:center">开关</th></tr></thead>
+<tbody></tbody>
+</table>
+</div>
+</div>
+
+<!-- 应用设置 -->
+<div class="sub-panel" id="sub-app">
+<div class="config-block">
+<div class="block-header">📱 应用外观</div>
+<div style="padding:10px 12px">
+<div style="display:flex;align-items:center;gap:16px;padding:10px 0;border-bottom:1px solid var(--border)"><span style="flex:0 0 100px;font-size:13px;font-weight:500">应用名称</span><input class="config-input" id="ku9AppName" value="" placeholder="桌面显示的名称" style="flex:1;max-width:280px"><span style="font-size:11px;color:var(--text-secondary)">修改后需重新生成APK</span></div>
+<div style="display:flex;align-items:center;gap:16px;padding:12px 0;border-bottom:1px solid var(--border)"><span style="flex:0 0 100px;font-size:13px;font-weight:500">应用图标</span><div class="dropzone dropzone-ku9-icon" onclick="ku9UploadIcon()" style="padding:14px 20px;min-width:120px;cursor:pointer;text-align:center"><div style="font-size:24px">🖼️</div><div style="font-size:12px;color:var(--text-secondary)">替换图标</div></div><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><div class="preview-ku9-icon"></div><div class="preview-ku9-icon-name" style="font-size:11px;color:var(--text-secondary)"></div></div></div>
+<div style="display:flex;align-items:center;gap:16px;padding:12px 0"><span style="flex:0 0 100px;font-size:13px;font-weight:500">背景图片</span><div class="dropzone dropzone-ku9-bg" onclick="ku9UploadBg()" style="padding:14px 20px;min-width:120px;cursor:pointer;text-align:center"><div style="font-size:24px">🌄</div><div style="font-size:12px;color:var(--text-secondary)">替换背景</div></div><div style="display:flex;flex-direction:column;align-items:center;gap:4px"><div class="preview-ku9-bg"></div><div class="preview-ku9-bg-name" style="font-size:11px;color:var(--text-secondary)"></div></div></div>
+</div>
+</div>
+</div>
+
+
+<!-- 下载链接 -->
+<div class="sub-panel" id="sub-downloads">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px"><span style="font-size:15px;font-weight:600">已生成APK</span><button class="btn btn-sm" onclick="ku9RefreshDownloads()">🔄 刷新</button></div>
+<table class="download-table">
+<thead><tr><th style="width:50px">序号</th><th>文件名</th><th style="width:160px">生成时间</th><th style="width:100px">大小</th><th style="width:120px">操作</th></tr></thead>
+<tbody id="ku9DownloadBody">
+<tr><td colspan="5" style="text-align:center;color:var(--text-secondary);padding:20px">暂无生成记录</td></tr>
+</tbody>
+</table>
+</div>
+
+</div>
+
+<!-- ============ 端口映射 ============ -->
+<div class="panel" id="panel-portmap">
+<h3 style="margin-bottom:8px">🔌 端口映射</h3>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">添加后需要手动在宿主机上添加端口映射并重启容器，编辑后点击「应用配置」生效</p>
+<div class="toolbar">
+<button class="btn btn-primary" onclick="showAddPortMap()">➕ 添加映射</button>
+</div>
+<div style="overflow-x:auto"><table id="portMapTable"><thead><tr><th style="min-width:60px;text-align:center">本地端口</th><th style="min-width:150px;text-align:left">目标地址<span class="resize-handle"></span></th><th style="min-width:100px;text-align:left">备注<span class="resize-handle"></span></th><th style="min-width:80px;text-align:center">状态</th><th style="min-width:140px;text-align:center">操作</th></tr></thead><tbody id="portMapBody"></tbody></table></div>
+</div>
+
+<!-- ============ 代理服务 ============ -->
+<div class="panel" id="panel-proxy">
+<h3 style="margin-bottom:8px">🌐 代理服务</h3>
+
+<!-- 说明 -->
+<div style="padding:14px 16px;background:#f0f5ff;border-radius:8px;border:1px solid #d6e4ff;margin-bottom:12px;font-size:13px;line-height:1.8">
+  <strong>🌐 代理转发</strong><br>
+  本功能无需任何配置 直连转发<br><br>
+  代理端口: <code>8888</code>（宿主机 <code>1234</code> → 容器 <code>8888</code>）<br><br>
+  使用格式：<br>
+  <code>http://网址或IP:端口号/单播地址</code><br><br>
+  示例：<code>http://www.baidu.com:1234/http://10.10.10.10/PLTV/...?fmt=ts2hls</code>
+</div>
+
+
+</div>
+
+<!-- ============ 共享目录管理 ============ -->
+<div class="panel" id="panel-sharedir">
+<h3 style="margin-bottom:8px">📁 共享目录管理</h3>
+<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">上传文件到共享目录或删除已有文件</p>
+<div class="toolbar">
+<button class="btn btn-primary" onclick="showShareUpload()">📤 上传文件</button>
+<button class="btn" onclick="try{loadShareFiles()}catch(e){}">🔄 刷新</button>
+</div>
+<div id="sharePathBar" style="font-size:12px;color:var(--text-secondary);margin:8px 0;word-break:break-all"></div>
+<div style="overflow-x:auto"><table><thead><tr><th>文件名</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead><tbody id="shareFileBody"></tbody></table></div>
+</div>
+
+<!-- ============ 账户密码 ============ -->
+<div class="panel" id="panel-auth">
+<h3 style="margin-bottom:12px">👤 账户密码管理</h3>
+<div class="form-group"><label>当前用户名</label><input id="authCurrentUser" readonly style="background:#f5f5f5;width:200px"></div>
+<div class="form-group"><label>新用户名</label><input id="authNewUser" style="width:200px" placeholder="输入新用户名"></div>
+<button class="btn btn-primary" onclick="changeUsername()">💾 修改用户名</button>
+<hr style="margin:20px 0">
+<div class="form-group"><label>旧密码</label><input id="authOldPass" type="password" style="width:200px"></div>
+<div class="form-group"><label>新密码（至少4位）</label><input id="authNewPass" type="password" style="width:200px"></div>
+<button class="btn btn-primary" onclick="changePassword()">💾 修改密码</button>
+<button class="btn btn-danger" onclick="doLogout()" style="margin-left:8px">🚪 退出登录</button>
+</div>
+
+<!-- ============ 模态框 ============ -->
+<div class="modal" id="modal">
+<div class="modal-content">
+<div class="modal-title" id="modalTitle">操作</div>
+<div id="modalBody"></div>
+<div class="modal-actions" id="modalActions">
+<button class="btn" onclick="closeModal()">取消</button>
+</div>
+</div>
+</div>
+
+<script src="/static/js/portmap.js"></script>
+<script src="/static/js/ku9apps.js?v=20260801u3"></script>
+<script src="/static/js/webplayer.js?v=20260801u7"></script>
+<script src="/static/js/app.js"></script>
+
+</body>
+</html>
+
