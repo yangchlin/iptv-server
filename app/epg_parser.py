@@ -6,11 +6,22 @@
 2. 51zmt 规则: <channel id="1"><display-name lang="zh">CCTV1</display-name></channel>
    <programme start="..." stop="..." channel="1"><title>节目名</title><desc>描述</desc></programme>
 """
+import html
 import re
-import gzip
-import io
-from typing import Optional
-import xml.etree.ElementTree as ET
+
+
+def _clean_text(s: str) -> str:
+    """清理节目文本：去 CDATA 包裹 + 反转义 XML 实体 + 去首尾空白。
+
+    源站标题常见 `新闻&amp;天气` 或 `<![CDATA[xxx]]>`，若不处理，
+    xml_builder 再转义一次就会变成 `&amp;amp;` / `&lt;![CDATA[...]]&gt;`。
+    """
+    if not s:
+        return ""
+    s = s.strip()
+    if s.startswith("<![CDATA[") and s.endswith("]]>"):
+        s = s[9:-3]
+    return html.unescape(s).strip()
 
 
 def resolve_cache_files(cache_dir, source_url: str):
@@ -31,16 +42,38 @@ def resolve_cache_files(cache_dir, source_url: str):
     cache_dir = Path(cache_dir)
     if not source_url:
         return []
-    # 从 URL 提取文件名主干: xxx.xml.gz / xxx.xml -> xxx
+    if not cache_dir.exists():
+        return []
+
+    # ① 新命名（域名_文件名_短哈希.xml / 自定义 cache_name）：按源配置精确算出来
+    try:
+        from . import config as _config
+        from .downloader import epg_cache_name
+        url_key = str(source_url).strip()
+        for s in _config.get_epg_sources():
+            if str(s.get("url", "")).strip() == url_key:
+                target = cache_dir / epg_cache_name(s)
+                if target.is_file():
+                    return [target]
+                break
+    except Exception:
+        pass
+
+    # ② 旧命名兼容：xxx.xml / xxx.gz → xxx
     base = source_url.rstrip("/").split("/")[-1]
     base = base.replace(".gz", "").replace(".xml", "").strip()
     if not base:
         return []
-    if not cache_dir.exists():
-        return []
-    # 严格匹配: 文件名包含该主干
-    matched = [p for p in cache_dir.glob("*.xml") if base in p.name]
-    return matched
+    # 严格匹配：文件名主干等于 base，或以 base + 分隔符 开头
+    # （不能用 base in p.name，否则 e1 会命中 e11.xml，抽到别的源的节目）
+    exact, loose = [], []
+    for p in cache_dir.glob("*.xml"):
+        stem = p.stem
+        if stem == base:
+            exact.append(p)
+        elif stem.startswith((base + ".", base + "_", base + "-")):
+            loose.append(p)
+    return sorted(exact) + sorted(loose)
 
 
 def detect_rule(xml_text: str) -> str:
@@ -86,8 +119,8 @@ def extract_programmes_112114(xml_text: str, keyword: str = "") -> list:
                 "channel": ch,
                 "start": start.group(1) if start else "",
                 "stop": stop.group(1) if stop else "",
-                "title": title_match.group(1).strip() if title_match else "",
-                "desc": desc_match.group(1).strip() if desc_match else "",
+                "title": _clean_text(title_match.group(1)) if title_match else "",
+                "desc": _clean_text(desc_match.group(1)) if desc_match else "",
             })
     except Exception as e:
         print(f"112114 解析错误: {e}")
@@ -128,8 +161,8 @@ def extract_programmes_51zmt(xml_text: str, keyword: str = "") -> list:
                 "channel_id": ch_id,
                 "start": start.group(1) if start else "",
                 "stop": stop.group(1) if stop else "",
-                "title": title_match.group(1).strip() if title_match else "",
-                "desc": desc_match.group(1).strip() if desc_match else "",
+                "title": _clean_text(title_match.group(1)) if title_match else "",
+                "desc": _clean_text(desc_match.group(1)) if desc_match else "",
             })
     except Exception as e:
         print(f"51zmt 解析错误: {e}")
@@ -175,25 +208,28 @@ def get_channel_list(xml_text: str, rule: str = "auto") -> list:
     return channels
 
 
-def search_channels(xml_text: str, keyword: str, rule: str = "auto") -> list:
-    """搜索匹配关键词的频道"""
-    channels = get_channel_list(xml_text, rule)
-    if not keyword:
-        return channels
-    return [c for c in channels if keyword.lower() in c["name"].lower() or keyword.lower() in c["id"].lower()]
-
-
 def format_xmltv_time(dt_str: str) -> str:
     """将时间格式化为 XMLTV 格式: YYYYMMDDHHMMSS +0800"""
-    # 处理多种输入格式
-    # 格式1: 20260724000400 +0800 (112114)
-    # 格式2: 2026-07-24 00:04:00 (内部JSON)
-    dt_str = dt_str.strip()
-    # 已经是标准格式
-    if re.match(r'^\d{14}\s+\+', dt_str):
+    if not dt_str:
+        return ""
+    dt_str = str(dt_str).strip()
+
+    # 已经是标准格式：14 位数字 + 时区（如 20260724000400 +0800）
+    if re.match(r'^\d{14}\s+[+-]\d{4}$', dt_str):
         return dt_str
-    # JSON 格式
-    m = re.match(r'(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', dt_str)
+
+    # 纯 14 位数字（无时区，部分 EPG 源就是这样）→ 补 +0800
+    if re.match(r'^\d{14}$', dt_str):
+        return f"{dt_str} +0800"
+
+    # 纯 12 位数字（无秒）→ 补秒和时区
+    if re.match(r'^\d{12}$', dt_str):
+        return f"{dt_str}00 +0800"
+
+    # JSON / 日志常见格式：2026-07-24 00:04:00 或 2026-07-24T00:04:00
+    m = re.match(r'(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?', dt_str)
     if m:
-        return f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}{m.group(5)}{m.group(6)} +0800"
+        sec = m.group(6) or "00"
+        return f"{m.group(1)}{m.group(2)}{m.group(3)}{m.group(4)}{m.group(5)}{sec} +0800"
+
     return dt_str

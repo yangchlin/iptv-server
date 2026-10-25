@@ -8,8 +8,9 @@
 // 仪表盘「电脑播放」卡片点击 → 下载 Windows 播放器绿色 EXE
 function downloadExe() {
   const a = document.createElement('a');
-  // 指向镜像内 static/不要动/IPTV.exe（文件已打进 Docker 镜像，普通操作删不到）
-  a.href = '/static/不要动/IPTV.exe';
+  // 指向 /tools/IPTV.exe：优先读宿主挂载的 ./data/tools/IPTV.exe（换版本不用重建镜像），
+  // 镜像里 static/tools/IPTV.exe 仅作为兜底
+  a.href = '/tools/IPTV.exe';
   a.download = 'IPTV.exe';
   document.body.appendChild(a);
   a.click();
