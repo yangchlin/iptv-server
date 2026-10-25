@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="shortcut icon" href="/static/favicon.svg">
-<title>IPTV管理系统</title>
+<title>IPTV-EPG管理系统</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
@@ -286,6 +286,11 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <div style="padding:16px;background:#f0f5ff;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:var(--primary)" id="statChannels">-</div><div style="font-size:12px;color:var(--text-secondary)">频道总数（含EPG提取）</div></div>
 <div style="padding:16px;background:#fff7e6;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:var(--warning)" id="statIcons">-</div><div style="font-size:12px;color:var(--text-secondary)">台标总数</div></div>
 <div style="padding:16px;background:#fff0f6;border-radius:8px;text-align:center"><div style="font-size:24px;font-weight:700;color:#eb2f96" id="statXmlSize">-</div><div style="font-size:12px;color:var(--text-secondary)">XML文件大小</div></div>
+<!-- 网页播放卡片 -->
+<div style="padding:16px;background:#1677ff;border-radius:8px;text-align:center;cursor:pointer;position:relative;min-height:60px;display:flex;flex-direction:column;justify-content:center" onclick="openWebPlayer()" title="在浏览器中直接播放">
+  <div style="font-size:20px;font-weight:700;color:#ffffff">网页播放</div>
+  <div style="font-size:11px;color:rgba(255,255,255,.6);margin-top:4px">浏览器直接观看</div>
+</div>
 <div id="webPlayerCard" style="padding:16px;background:#1b1e2b;border-radius:8px;text-align:center;cursor:pointer;position:relative;min-height:60px;display:flex;flex-direction:column;justify-content:center" onclick="downloadExe()" title="下载 Windows 电脑播放器 (EXE)">
   <div style="font-size:20px;font-weight:700;color:#ffffff">电脑播放</div>
   <div style="font-size:11px;color:rgba(255,255,255,.4);margin-top:4px">下载 Windows 版播放器 (EXE)</div>
@@ -747,6 +752,10 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <script src="/static/js/webplayer.js?v=20261022z"></script>
 <script src="/static/js/telecomepg.js?v=20261022z"></script>
 <script src="/static/js/app.js?v=20261022z"></script>
+<!-- 播放 HLS (m3u8) 格式 -->
+<script src="/static/js/hls.min.js"></script>
+<!-- 播放 TS / FLV 裸流 (RTP2HTTPD 组播代理输出) -->
+<script src="/static/js/mpegts.js"></script>
 
 <!-- 模态框 -->
 <div class="modal" id="modal">
@@ -757,6 +766,69 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <button class="btn" onclick="closeModal()">取消</button>
 </div>
 </div>
+</div>
+
+<!-- 独立网页播放弹窗 -->
+<div class="modal" id="webPlayerModal" onclick="if(event.target===this)closeWebPlayer()">
+  <div class="modal-content" style="max-width:900px;width:95%;padding:16px;background:#000;">
+    
+    <!-- 头部：手机端会自动换行，按钮不会挤在一起，增加了文件选择 -->
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;color:#fff;">
+      <h3 style="margin:0;font-size:16px;" id="webPlayerTitle">📺 网页播放</h3>
+      
+      <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:200px;justify-content:flex-end;flex-wrap:wrap;">
+        <!-- 新增：选择 M3U 文件 -->
+        <select id="webPlayerFileSource" onchange="changeWebPlayerFile()" style="width:140px;background:#222;color:#fff;border-color:#444;padding:6px;font-size:13px;border-radius:4px;">
+          <option value="">加载文件中...</option>
+        </select>
+        
+        <!-- 选择具体频道 -->
+        <select id="webPlayerSource" onchange="changeWebPlayerSource()" style="flex:1;max-width:250px;background:#222;color:#fff;border-color:#444;padding:6px;font-size:13px;border-radius:4px;">
+          <option value="">选择频道...</option>
+        </select>
+		<!-- ★ 新增：线路选择（默认隐藏，有多条线路才显示） -->
+        <select id="webPlayerLineSource" onchange="changeWebPlayerLine()" style="display:none;width:100px;background:#222;color:#fff;border-color:#444;padding:6px;font-size:13px;border-radius:4px;">
+        </select>
+        <button class="btn btn-sm" onclick="toggleWebPlayerFullscreen()" style="background:#333;color:#fff;border-color:#555;">⛶ 全屏</button>
+        <button class="btn btn-sm btn-danger" onclick="closeWebPlayer()">关闭</button>
+      </div>
+    </div>
+
+    <!-- 视频容器：限制宽高比 -->
+    <div id="webPlayerContainer" style="position:relative;width:100%;aspect-ratio:16/9;background:#111;border-radius:6px;overflow:hidden;cursor:pointer;" onclick="togglePlayPause()">
+      
+      <!-- 关闭原生 controls，去掉点击事件，由外层容器接管 -->
+      <video id="webPlayerVideo" autoplay playsinline webkit-playsinline style="width:100%;height:100%;object-fit:contain;outline:none;pointer-events:none;" crossorigin="anonymous"></video>
+      
+      <!-- 加载提示（居中显示） -->
+      <div id="webPlayerMsg" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#aaa;text-align:center;pointer-events:none;z-index:10;"></div>
+
+      <!-- ★ 核心：居中的悬浮播放/暂停大图标 -->
+      <div id="centerPlayBtn" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:64px;height:64px;background:rgba(0,0,0,0.5);border-radius:50%;display:flex;align-items:center;justify-content:center;pointer-events:none;transition:all 0.2s;z-index:20; opacity: 1;">
+        <!-- 默认显示播放三角形 -->
+        <svg id="centerPlayIcon" viewBox="0 0 24 24" fill="#fff" style="width:32px;height:32px;margin-left:4px;"><path d="M8 5v14l11-7z"/></svg>
+        <!-- 暂停图标默认隐藏 -->
+        <svg id="centerPauseIcon" viewBox="0 0 24 24" fill="#fff" style="width:32px;height:32px;display:none;"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+      </div>
+
+      <!-- 底部简易控制栏 -->
+      <div id="customControls" style="position:absolute;bottom:0;left:0;width:100%;height:40px;background:linear-gradient(transparent, rgba(0,0,0,0.8));display:flex;align-items:center;padding:0 16px;box-sizing:border-box;z-index:20;" onclick="event.stopPropagation()">
+        <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1" style="width:80px;cursor:pointer;margin-right:10px;" oninput="changeVolume(this.value)">
+        <span id="timeDisplay" style="color:#fff;font-size:12px;flex:1;opacity:0.8;">直播</span>
+        <button onclick="toggleWebPlayerFullscreen()" style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer;outline:none;">⛶</button>
+      </div>
+    </div>
+
+    <!-- ★ 新增：直播/回看 切换控制栏 -->
+    <div id="webPlayerTimebar" style="margin-top:10px; padding:10px; background:#1a1a1a; border-radius:6px; display:flex; align-items:center; gap:10px; flex-wrap:wrap; color:#ccc; font-size:13px;">
+    </div>
+
+    <!-- EPG 显示区（手机端可以向下滚动看节目单） -->
+    <div id="webPlayerEpg" style="margin-top:12px; background:#222; border-radius:6px; padding:10px; color:#ccc; font-size:13px; max-height:150px; overflow-y:auto; display:none;">
+      <div style="color:#888; font-size:12px; margin-bottom:6px; position:sticky; top:0; background:#222; padding-bottom:4px;">📅 节目预告</div>
+      <div id="webPlayerEpgList">正在加载节目单...</div>
+    </div>
+  </div>
 </div>
 
 </body>

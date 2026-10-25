@@ -7,6 +7,8 @@ import json
 import re
 import time
 import uuid
+import httpx
+from fastapi.responses import StreamingResponse
 from collections import defaultdict
 from pathlib import Path
 from urllib.parse import quote
@@ -164,7 +166,7 @@ async def auth_and_security_middleware(request: Request, call_next):
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; "
-        "connect-src 'self'",
+        "connect-src 'self' http: https: ws: wss:",
     )
     return response
 
@@ -2391,3 +2393,30 @@ async def startup():
 async def shutdown():
     scheduler.stop()
     await downloader.close_client()
+
+@app.api_route("/api/stream/{path:path}", methods=["GET"])
+async def proxy_stream(path: str, request: Request):
+    """代理 RTP2HTTPD 的 TS 流，彻底解决浏览器跨域(CORS)限制"""
+    # 1. 从配置读取 RTP2HTTPD 地址 (比如 http://192.168.6.1:5140)
+    rtp_base = config.get_settings().get("telecom", {}).get("RTP2HTTPD", "").rstrip("/")
+    if not rtp_base:
+        raise HTTPException(404, "未配置 RTP2HTTPD 地址")
+    
+    # 2. 拼接真实地址
+    query_string = f"?{request.url.query}" if request.url.query else ""
+    target_url = f"{rtp_base}/{path}{query_string}"
+    
+    # 3. 发起流式请求
+    client = httpx.AsyncClient(timeout=None)
+    req = client.build_request("GET", target_url)
+    rsp = await client.send(req, stream=True)
+    
+    # 4. 伪装同源返回给前端
+    return StreamingResponse(
+        rsp.aiter_raw(),
+        status_code=rsp.status_code,
+        headers={
+            "Content-Type": rsp.headers.get("Content-Type", "video/mp2t"),
+            "Access-Control-Allow-Origin": "*",
+        }
+    )
