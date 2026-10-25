@@ -2,7 +2,7 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "webplayer" ]
   workflow_dispatch:
 
 jobs:
@@ -36,7 +36,7 @@ jobs:
             PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
           # 注意这里改成你自己的 Docker Hub 用户名
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/iptv-server:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/iptv-server:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/iptv-EPGserver:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/iptv-EPGserver:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
