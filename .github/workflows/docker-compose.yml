@@ -1,0 +1,45 @@
+version: "3.8"
+
+services:
+  iptv-server:
+    build:
+      context: .
+      args:
+        # 国内默认；海外可改成 deb.debian.org / pypi.org
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
+    image: iptv-server:latest
+    container_name: ${CONTAINER_NAME:-iptv-server}
+    restart: unless-stopped
+    # 给 nginx / uvicorn 留出优雅退出的时间（代码里有 trap）
+    stop_grace_period: 30s
+    ports:
+      - "${WEB_PORT:-5673}:80"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PYTHONUNBUFFERED: "1"
+      AUTH_USERNAME: ${AUTH_USERNAME:-666}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-666}
+    volumes:
+      # 运行数据：json / xml / m3u / icons / logs / 配置
+      - ${DATA_ROOT:-./data}/json:/app/data/json
+      - ${DATA_ROOT:-./data}/xml:/app/data/xml
+      - ${DATA_ROOT:-./data}/m3u:/app/data/m3u
+      - ${DATA_ROOT:-./data}/icons:/app/data/icons
+      - ${DATA_ROOT:-./data}/logs:/app/data/logs
+      - ${DATA_ROOT:-./data}/config:/app/data/config
+      # “共享目录”：生成 epg.xml 时额外备份一份（对应设置页的共享目录路径）
+      - ${SHARE_DIR:-./data/share}:/app/data/share
+      # 外部工具（IPTV.exe 等）：换版本直接替换文件，不用重建镜像
+      - ${TOOLS_DIR:-./data/tools}:/app/data/tools
+    logging:
+      # 限制日志体积，避免长期运行把 NAS 磁盘写满
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 内网 DNS，解析不了外网 EPG 域名时可改；不需要可整段删掉
+    dns:
+      - ${DNS1:-223.5.5.5}
+      - ${DNS2:-119.29.29.29}
