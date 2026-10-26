@@ -26,6 +26,7 @@ from . import downloader
 from . import xml_builder
 from . import epg_parser
 from . import m3u_handler
+from .telecom_epg import append_r2h_token
 from .logger import logger
 from .scheduler import scheduler
 from .auth import router as auth_router
@@ -140,7 +141,8 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
 
 
 def _is_request_authed(request: Request) -> bool:
-    token = request.cookies.get("auth_token") or request.headers.get("X-Auth-Token", "")
+    # ★ 修改：调用 auth_mod._extract_token 动态获取当前端口对应的 Token
+    token = auth_mod._extract_token(request)
     return auth_mod._lookup_token(token) is not None
 
 
@@ -160,13 +162,13 @@ async def auth_and_security_middleware(request: Request, call_next):
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "SAMEORIGIN"
     response.headers["Referrer-Policy"] = "same-origin"
-    response.headers.setdefault(
-        "Content-Security-Policy",
+    response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
         "img-src 'self' data: https:; "
-        "connect-src 'self' http: https: ws: wss:",
+        "connect-src 'self' http: https: ws: wss:; "
+        "media-src 'self' blob:;"
     )
     return response
 
@@ -1843,6 +1845,7 @@ async def channels_overview(source: str = "telecom"):
     if source == "telecom":
         telecom_cfg = config.get_settings().get("telecom", {}) or {}
         rtp = str(telecom_cfg.get("RTP2HTTPD", "") or "").rstrip("/")
+        r2h_token = str(telecom_cfg.get("r2h_token", "") or "").strip()
         logo_url = str(telecom_cfg.get("logo_url", "") or "").strip()
         epg_base = str(telecom_cfg.get("epg_server_url", "") or "").strip()
         logo_base = (logo_url or epg_base).rstrip("/")
@@ -1864,6 +1867,10 @@ async def channels_overview(source: str = "telecom"):
                 if rtp:
                     base = base.replace("rtsp://", f"{rtp}/rtsp/")
                 catchup = base + "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
+
+            # ★ 与生成的 m3u/txt 保持一致：配了 r2h-token 就加到直播/回看地址上
+            live = append_r2h_token(live, r2h_token)
+            catchup = append_r2h_token(catchup, r2h_token)
 
             fcc = ""
             if str(ch.get("fcc_enable", "")) == "2" and ch.get("fcc_ip"):

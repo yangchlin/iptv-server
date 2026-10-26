@@ -13,7 +13,7 @@ import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 import requests
 
@@ -91,6 +91,8 @@ def get_telecom_config() -> Dict[str, Any]:
         "Authenticator": "",
         "auth_require_key": False,
         "RTP2HTTPD": "",
+        "r2h_token": "",
+        "enable_group": False,
         "templateName": "",
         "areaId": "",
         "epg_server_url": "",
@@ -525,6 +527,26 @@ def format_xmltv_time(dt_str: str) -> str:
 
 
 # ════════════════════════════════════════════════════════════════
+# rtp2httpd 的 r2h-token
+# ════════════════════════════════════════════════════════════════
+
+def append_r2h_token(url: str, token: str) -> str:
+    """给 rtp2httpd 的地址追加 `r2h-token=<token>`。
+
+    - token 留空 → 原样返回（不填就不加，符合“不填时 URL 不带 token”）
+    - URL 自带 ?fcc=... 时用 & 连接，没有 ? 时用 ? 连接
+    - 已经有 r2h-token= 的不重复加
+    """
+    token = str(token or "").strip()
+    if not token or not url:
+        return url
+    if "r2h-token=" in url:
+        return url
+    sep = "&" if "?" in url else "?"
+    return f"{url}{sep}r2h-token={quote(token, safe='')}"
+
+
+# ════════════════════════════════════════════════════════════════
 # 生成 M3U
 # ════════════════════════════════════════════════════════════════
 
@@ -533,6 +555,8 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
     epg_server_url = str(config_data.get("epg_server_url", "") or "").rstrip("/")
     epgname = str(config_data.get("epgname", "") or "epg.xml").lstrip("/")
     logo_url = config_data.get("logo_url", "")
+    # ★ 新增：r2h-token 配置
+    r2h_token = str(config_data.get("r2h_token", "") or "").strip()
 
     # ★ 新增：提取开关和规则
     enable_group = config_data.get("enable_group", False)
@@ -548,7 +572,7 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
         name = ch.get("name", "")
         channel_url = ch.get("channel_url", "")
         rtsp_raw = ch.get("rtsp_url", "").strip()
-        
+
         play_url = f"{rtp2httpd}/rtp/{channel_url}" if rtp2httpd and channel_url else channel_url
 
         fcc_enable = ch.get("fcc_enable", "0")
@@ -561,7 +585,7 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
             if fec_port and fec_port != "0":
                 play_url = f"{play_url}&fec={fec_port}"
 
-        # ★ 新增：处理回看地址
+        # ★ 处理回看地址回看（catchup-source）：playseek + r2h-seek-mode + r2h-token
         rtsp_url = None
         if rtsp_raw.startswith("rtsp://"):
             if "?" in rtsp_raw:
@@ -569,6 +593,11 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
             prefix = f"{rtp2httpd}/rtsp/" if rtp2httpd else "rtsp://"
             rtsp_url = rtsp_raw.replace("rtsp://", prefix)
             rtsp_url += "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
+
+        # ★ r2h-token：配了才加，没配原样
+        play_url = append_r2h_token(play_url, r2h_token)
+        if rtsp_url:
+            rtsp_url = append_r2h_token(rtsp_url, r2h_token)
 
         tvg_logo = config.logo_link(logo_base, epg_server_url, name)
         attrs = f'tvg-logo="{tvg_logo}" tvg-id="{name}" tvg-name="{name}"'
@@ -657,8 +686,10 @@ def generate_sctv_files(channels, config_data):
         epg_server_url = str(config_data.get("epg_server_url", "") or "").rstrip("/")
         epgname = str(config_data.get("epgname", "") or "epg.xml").lstrip("/")
         logo_url = (config_data.get("logo_url") or epg_server_url).rstrip("/")
+        r2h_token = str(config_data.get("r2h_token", "") or "").strip()
 
-        # ★ 新增：提取开关和规则
+        # ★ 新增：r2h-token 配置
+
         enable_group = config_data.get("enable_group", False)
         group_rules = config.get_group_rules() if enable_group else None
 
@@ -696,25 +727,26 @@ def generate_sctv_files(channels, config_data):
                         rtsp_raw = rtsp_raw.split("?")[0]
                     prefix = f"{RTP}/rtsp/" if RTP else "rtsp://"
                     rtsp_url = rtsp_raw.replace("rtsp://", prefix)
-                    rtsp_url += "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
+                    rtsp_url += ("?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}")
+                # ★ r2h-token：配了才加（直播 + 回看都加），没配原样
+                url = append_r2h_token(url, r2h_token)
+                if rtsp_url:
+                    rtsp_url = append_r2h_token(rtsp_url, r2h_token)
 
-                # 计算分组
                 group_str = ""
                 if enable_group:
                     g = _apply_group_rules(name, group_rules)
                     group_str = f",{g}" if g else ""
 
-                # 写入 TXT
                 if rtsp_url:
                     ftxt.write(f"{name},{rtsp_url}#{url}{group_str}\n")
                 else:
                     ftxt.write(f"{name},{url}{group_str}\n")
 
-                # 写入 M3U
                 tvg_logo = config.logo_link(logo_url, epg_server_url, name)
                 tvg_id_str = ch.get("tvg_id", name) or name
                 attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id_str}" tvg-name="{name}"'
-                
+
                 if enable_group:
                     g = _apply_group_rules(name, group_rules)
                     if g:

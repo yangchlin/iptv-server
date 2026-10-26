@@ -43,7 +43,7 @@ _ALLOWED_TELECOM_KEYS = {
     "enabled", "AuthenticationIP", "key", "UserID", "mac", "STBID", "ip",
     "STBType", "STBVersion", "UserAgent", "Authenticator", "RTP2HTTPD",
     "templateName", "areaId", "epg_server_url", "epgname", "logo_url",
-    "merge_output_files", "auth_require_key", "enable_group", 
+    "merge_output_files", "auth_require_key", "enable_group", "r2h_token", 
 }
 # 布尔类型字段（其余按字符串处理）
 _TELECOM_BOOL_KEYS = {"enabled", "merge_output_files", "auth_require_key", "enable_group"}
@@ -417,6 +417,19 @@ def _run_key_search(auth_hex: str, max_iters: int, workers: int) -> None:
     telecom_log(
         f"✅ 找到 key: {found}（试了 {_key_search['tested']:,} 个，用时 "
         f"{time.time() - started:.0f} 秒），已写入配置")
+
+    # ★ 新增：写入 key.txt 备份
+    try:
+        path = config.LOG_DIR / "key.txt"
+        path.write_text(
+            f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}\n"
+            f"找到的加密 KEY：{found}\n"
+            f"该 KEY 已自动写入配置文件 app_config.json。\n",
+            encoding="utf-8",
+        )
+        telecom_log(f"📄 已将结果保存至日志目录的 key.txt")
+    except Exception as e:
+        telecom_log(f"⚠️ 保存 key.txt 失败: {e}")
 
     # 用新 key 认证一次：现场生成新的 Authenticator，并由 telecom_auth 写回配置
     try:

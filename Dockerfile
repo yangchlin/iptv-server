@@ -83,7 +83,7 @@ RUN chmod +x start.sh
 COPY nginx.conf /etc/nginx/nginx.conf
 
 RUN mkdir -p /app/data/json /app/data/xml /app/data/m3u /app/data/icons \
-             /app/data/logs /app/data/config /app/data/share \
+             /app/data/logs /app/data/config /app/data/tools /app/data/share \
     && nginx -t
 
 EXPOSE 80

@@ -15,7 +15,7 @@
 version: "3.8"
 
 services:
-  iptv-server:
+  iptv-epgserver:
     build:
       context: .
       args:
@@ -23,7 +23,7 @@ services:
         APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
         PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
-    image: iptv-server:latest
+    image: iptv-epgserver:latest
     container_name: ${CONTAINER_NAME:-iptv-server}
     restart: unless-stopped
     # 给 nginx / uvicorn 留出优雅退出的时间（代码里有 trap）

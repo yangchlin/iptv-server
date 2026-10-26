@@ -85,6 +85,8 @@ DEFAULT_SETTINGS = {
         "Authenticator": "",
         "auth_require_key": False,     # True = 必须用 key 现场加密出 Authenticator，没有 key 就拒绝认证
         "RTP2HTTPD": "",
+        "r2h_token": "",               # rtp2httpd 的 r2h-token；填了才在生成的地址后加 &r2h-token=…
+        "enable_group": False,         # 生成 m3u/txt 时按「分组规则」补 group-title
         "templateName": "",
         "areaId": "",
         "epg_server_url": "",

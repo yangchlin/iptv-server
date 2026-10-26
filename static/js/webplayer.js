@@ -1,20 +1,22 @@
 /**
- * webplayer.js - 独立模块：网页播放（全能版 + 多线路 + 代理防跨域 + 回看 + EPG） + 电脑播放
+ * webplayer.js - 终极版：悬浮画中画 + 回看高亮 + 强制解除静音
  */
 
-// ==================== 全局播放器实例 ====================
 let hlsPlayer = null;
 let mpegtsPlayer = null;
 let cachedEpgXmlDoc = null;    
 let allM3uFiles = [];
-let currentStreamUrls = [];    // 当前频道所有的直播线路
-let currentCatchupUrl = '';    // 回看模板地址
+let currentStreamUrls = [];    
+let currentCatchupUrl = '';    
 let currentChannelName = '';
 let currentTvgId = '';
-let currentCatchupIndex = -1;  // 记录当前正在回看的节目索引
-let currentEpgDay = '';        // 记录当前选中的 EPG 日期
-let currentChannelProgrammes = []; // 当前频道的所有节目
-let catchupEndTimer = null;    // 自动连播定时器
+let currentCatchupIndex = -1;  
+let currentEpgDay = '';        
+let currentChannelProgrammes = []; 
+let catchupEndTimer = null;    
+
+let currentPlayingCatchupStart = null;
+let currentPlayingCatchupStop = null;
 
 // ★ 获取本地时区的时间字符串 YYYYMMDDHHmmss
 function getLocalNowStr() {
@@ -35,15 +37,71 @@ function destroyPlayers() {
     video.pause();
     video.removeAttribute('src');
     video.load();
+    video.onerror = null;
+    video.onplaying = null;
   }
   if (hlsPlayer) { hlsPlayer.destroy(); hlsPlayer = null; }
   if (mpegtsPlayer) { mpegtsPlayer.destroy(); mpegtsPlayer = null; }
   if (catchupEndTimer) { clearInterval(catchupEndTimer); catchupEndTimer = null; }
 }
 
+// ★ 实现窗口拖拽移动
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('webPlayerModal');
+  const header = document.getElementById('webPlayerHeader');
+  const content = document.getElementById('webPlayerModalContent');
+  
+  if(header && content && modal) {
+    let isDragging = false;
+    let startX, startY, startLeft, startTop;
+
+    header.addEventListener('mousedown', (e) => {
+      if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return;
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = content.getBoundingClientRect();
+      startLeft = rect.left;
+      startTop = rect.top;
+      
+      const video = document.getElementById('webPlayerVideo');
+      if (video) video.style.pointerEvents = 'none';
+      
+      document.body.style.userSelect = 'none';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      content.style.left = (startLeft + dx) + 'px';
+      content.style.top = (startTop + dy) + 'px';
+      content.style.right = 'auto';
+    });
+
+    document.addEventListener('mouseup', () => {
+      if (isDragging) {
+        isDragging = false;
+        const video = document.getElementById('webPlayerVideo');
+        if (video) video.style.pointerEvents = 'auto';
+        document.body.style.userSelect = '';
+      }
+    });
+  }
+});
+
 // 打开播放器
 window.openWebPlayer = async function() {
-  document.getElementById('webPlayerModal').classList.add('active');
+  const modal = document.getElementById('webPlayerModal');
+  const content = document.getElementById('webPlayerModalContent');
+  modal.classList.add('active');
+  
+  if (content) {
+    content.style.left = 'auto';
+    content.style.right = '20px';
+    content.style.top = '80px';
+  }
+
   const msg = document.getElementById('webPlayerMsg');
   const fileSel = document.getElementById('webPlayerFileSource');
   const chSel = document.getElementById('webPlayerSource');
@@ -94,7 +152,7 @@ window.changeWebPlayerFile = function() {
   if (fileName) loadChannelsFromFile(fileName);
 };
 
-// 解析频道列表（并聚合同名频道的多线路）
+// 解析频道列表
 async function loadChannelsFromFile(fileName) {
   const msg = document.getElementById('webPlayerMsg');
   const chSel = document.getElementById('webPlayerSource');
@@ -111,9 +169,9 @@ async function loadChannelsFromFile(fileName) {
     entries.forEach((e) => {
       let rawUrls = [];
       if (e._urls && e._urls.length > 0) {
-          rawUrls = e._urls;
+        rawUrls = e._urls;
       } else if (e.url) {
-          rawUrls = [e.url];
+        rawUrls = [e.url];
       }
 
       const validUrls = rawUrls.filter(url => typeof url === 'string' && url.trim().length > 0);
@@ -121,26 +179,18 @@ async function loadChannelsFromFile(fileName) {
 
       const name = e.display_name || e.tvg_name || e.name || '未知频道';
       const tvgId = e.tvg_id || name;
-      
       const key = tvgId + '||' + name; 
       
       if (channelMap.has(key)) {
-          const existing = channelMap.get(key);
-          validUrls.forEach(u => {
-              if (!existing.urls.includes(u)) {
-                  existing.urls.push(u);
-              }
-          });
-          if (!existing.catchup && e.catchup_source) {
-              existing.catchup = e.catchup_source;
-          }
+        const existing = channelMap.get(key);
+        validUrls.forEach(u => {
+          if (!existing.urls.includes(u)) existing.urls.push(u);
+        });
+        if (!existing.catchup && e.catchup_source) existing.catchup = e.catchup_source;
       } else {
-          channelMap.set(key, {
-              name: name,
-              tvgId: tvgId,
-              catchup: e.catchup_source || '',
-              urls: [...validUrls]
-          });
+        channelMap.set(key, {
+          name: name, tvgId: tvgId, catchup: e.catchup_source || '', urls: [...validUrls]
+        });
       }
     });
 
@@ -149,21 +199,15 @@ async function loadChannelsFromFile(fileName) {
       const opt = document.createElement('option');
       opt.value = count;
       opt.textContent = data.name;
-      
       opt.dataset.urls = JSON.stringify(data.urls); 
       opt.dataset.catchup = data.catchup;
       opt.dataset.channelName = data.name;
       opt.dataset.tvgId = data.tvgId; 
-      
       chSel.appendChild(opt);
       count++;
     }
 
-    if (count === 0) {
-      msg.innerHTML = '<span style="color:#ff4d4f">该文件中没有可播放的地址。</span>';
-    } else {
-      msg.textContent = '请选择频道进行播放。';
-    }
+    msg.textContent = count === 0 ? '该文件中没有可播放的地址。' : '请选择频道进行播放。';
   } catch (e) {
     msg.textContent = '读取文件失败: ' + e.message;
   }
@@ -171,6 +215,9 @@ async function loadChannelsFromFile(fileName) {
 
 // 切换频道
 window.changeWebPlayerSource = function() {
+  currentPlayingCatchupStart = null;
+  currentPlayingCatchupStop = null;
+
   const sel = document.getElementById('webPlayerSource');
   const opt = sel.options[sel.selectedIndex];
   const lineSel = document.getElementById('webPlayerLineSource');
@@ -187,6 +234,15 @@ window.changeWebPlayerSource = function() {
     lineSel.style.display = 'none';
     lineSel.innerHTML = '';
   }
+
+  // ★ 强制解除静音，音量 100%
+  const video = document.getElementById('webPlayerVideo');
+  video.muted = false;
+  video.volume = 1.0;
+  const volSlider = document.getElementById('volumeSlider');
+  if (volSlider) volSlider.value = 1.0;
+  const display = document.getElementById('timeDisplay');
+  if (display) display.textContent = '音量 100%';
 
   if (currentStreamUrls.length > 0) {
     playStream(currentStreamUrls[0], false);
@@ -214,6 +270,10 @@ function playStream(url, isCatchup = false) {
   if (!url) { msg.textContent = '缺少视频流地址'; return; }
   msg.textContent = isCatchup ? '正在连接回看视频流...' : '正在连接直播视频流...';
 
+  // ★ 移除强制静音代码，保留当前状态
+  // video.volume = 1.0; 
+  // video.muted = true;
+  
   let finalUrl = url;
   if (url.startsWith('rtp://')) {
       finalUrl = '/api/stream/rtp/' + url.replace('rtp://', '');
@@ -228,8 +288,16 @@ function playStream(url, isCatchup = false) {
                (url.includes('/rtsp/') ? url.indexOf('/rtsp/') : url.indexOf('/udp/'));
       finalUrl = '/api/stream' + url.substring(idx);
   }
-  
-  console.log("【防跨域代理】实际播放地址:", finalUrl);
+
+  video.onerror = function() {
+    if (mpegtsPlayer) {
+      mpegtsPlayer.pause();
+      mpegtsPlayer.unload();
+      mpegtsPlayer.destroy();
+      mpegtsPlayer = null;
+    }
+    msg.innerHTML = '⚠️ 播放失败：您的设备浏览器不支持该流的音视频编码<br><span style="font-size:12px;color:#ff7875;">（通常是 AC3 音频或 H.265/4K 导致，请尝试播放其他频道）</span>';
+  };
 
   if (finalUrl.includes('.m3u8')) {
     if (typeof Hls !== 'undefined' && Hls.isSupported()) {
@@ -238,51 +306,54 @@ function playStream(url, isCatchup = false) {
       hlsPlayer.attachMedia(video);
       hlsPlayer.on(Hls.Events.MANIFEST_PARSED, () => { 
         msg.textContent = ''; 
-        video.play().catch(() => { msg.textContent = '请点击视频播放按钮。'; });
+        video.play().catch(() => { msg.textContent = '请点击中间播放按钮。'; });
       });
     } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
       video.src = finalUrl; msg.textContent = ''; 
-      video.play().catch(() => { msg.textContent = '请点击视频播放按钮。'; });
+      video.play().catch(() => { msg.textContent = '请点击中间播放按钮。'; });
     }
   } else {
     if (typeof mpegts !== 'undefined' && mpegts.getFeatureList().mseLivePlayback) {
-      mpegtsPlayer = mpegts.createPlayer({ 
-        type: 'mse', 
-        isLive: !isCatchup, 
-        url: finalUrl 
-      });
-      mpegtsPlayer.attachMediaElement(video);
-      mpegtsPlayer.load();
-      
-      mpegtsPlayer.play().catch((err) => {
-        msg.textContent = '浏览器拦截了自动播放，请点击视频播放按钮。';
-      });
-      
-      video.onplaying = () => { msg.textContent = ''; };
-      
-      mpegtsPlayer.on(mpegts.Events.ERROR, (type, details) => {
-        console.error("MPEGTS Error:", type, details);
-        msg.innerHTML = `❌ 播放失败: ${type}`;
-      });
+      try {
+        mpegtsPlayer = mpegts.createPlayer({ 
+          type: 'mse', 
+          isLive: !isCatchup, 
+          url: finalUrl 
+        });
+        mpegtsPlayer.attachMediaElement(video);
+        mpegtsPlayer.load();
+        
+        mpegtsPlayer.on(mpegts.Events.MEDIA_INFO, () => {
+          msg.textContent = '';
+          video.play().catch(() => { msg.textContent = '请点击中间播放按钮。'; });
+        });
+        
+        video.onplaying = () => { 
+          msg.textContent = ''; 
+          const centerBtn = document.getElementById('centerPlayBtn');
+          if (centerBtn) centerBtn.style.opacity = '0';
+        };
+        
+        mpegtsPlayer.on(mpegts.Events.ERROR, (type, details) => {
+          if (type === 'MediaError') return; 
+        });
+      } catch (err) {
+        msg.textContent = '当前浏览器不支持该流媒体格式。';
+      }
     } else {
       msg.textContent = '当前浏览器不支持 TS 流播放。';
     }
   }
 
-  if (isCatchup) {
-    checkCatchupEnd(currentCatchupIndex);
-  }
+  if (isCatchup) checkCatchupEnd(currentCatchupIndex);
 }
 
-// 自动连播检测器
 function checkCatchupEnd(index) {
   if (catchupEndTimer) clearInterval(catchupEndTimer);
   if (index < 0) return; 
-
   catchupEndTimer = setInterval(() => {
     const video = document.getElementById('webPlayerVideo');
     if (!video || !mpegtsPlayer) { clearInterval(catchupEndTimer); return; }
-
     if (video.ended || (video.duration && video.currentTime >= video.duration - 1)) {
       clearInterval(catchupEndTimer);
       playNextProgram();
@@ -290,20 +361,15 @@ function checkCatchupEnd(index) {
   }, 2000);
 }
 
-// 播放列表里的下一个节目
 function playNextProgram() {
   const nextProg = currentChannelProgrammes[currentCatchupIndex + 1];
-
   if (nextProg) {
-    console.log("【自动连播】切换到下一个节目:", nextProg.title);
     window.playCatchupFromEPG(nextProg.start, nextProg.stop, currentCatchupIndex + 1);
   } else {
-    console.log("【自动连播】回看已播完，切回直播");
     window.playLiveFromEPG();
   }
 }
 
-// 加载并渲染 EPG 节目单（含日期导航）
 async function loadChannelEPG(tvgId, channelName) {
   const epgBox = document.getElementById('webPlayerEpg');
   const epgList = document.getElementById('webPlayerEpgList');
@@ -342,19 +408,16 @@ async function loadChannelEPG(tvgId, channelName) {
     });
 
     const days = [...new Set(currentChannelProgrammes.map(p => p.start.substring(0, 8)))].sort();
-    // ★ 修复：使用本地时区
     const todayStr = getLocalNowStr().substring(0, 8);
     
     let navHtml = `<div style="display:flex;gap:6px;overflow-x:auto;padding-bottom:8px;margin-bottom:8px;border-bottom:1px solid #444;scrollbar-width:none;">`;
     days.forEach(d => {
       let label = d.substring(4,6) + '月' + d.substring(6,8) + '日';
       if (d === todayStr) label = '今天';
-      
       const isActive = (d === currentEpgDay);
       const btnStyle = isActive 
         ? 'background:#1677ff;color:#fff;border-color:#1677ff;' 
         : 'background:#333;color:#aaa;border-color:#444;';
-        
       navHtml += `<button class="btn btn-sm" style="flex-shrink:0;padding:2px 10px;font-size:12px;${btnStyle}" onclick="switchEpgDay('${d}')">${label}</button>`;
     });
     navHtml += `</div>`;
@@ -371,21 +434,17 @@ async function loadChannelEPG(tvgId, channelName) {
   }
 }
 
-// 切换日期
 window.switchEpgDay = function(day) {
   currentEpgDay = day;
   loadChannelEPG(currentTvgId, currentChannelName);
 };
 
-// 渲染当前选中日期的节目列表
 function renderEpgDayContent() {
   const container = document.getElementById('epgDayContent');
   if (!container) return;
 
-  // ★ 修复：使用本地时区
   const nowStr = getLocalNowStr();
   const todayStr = nowStr.substring(0, 8);
-
   const dayProgrammes = currentChannelProgrammes.filter(p => p.start.substring(0, 8) === currentEpgDay);
 
   if (dayProgrammes.length === 0) {
@@ -394,7 +453,6 @@ function renderEpgDayContent() {
   }
 
   let html = '';
-
   dayProgrammes.forEach((p) => {
     const startStr = p.start;
     const stopStr = p.stop;
@@ -404,36 +462,45 @@ function renderEpgDayContent() {
     const isPlaying = isToday && (startStr <= nowStr && stopStr > nowStr);
     const isPast = !isPlaying && (stopStr < nowStr);
     
+    const isCatchupPlaying = (currentPlayingCatchupStart === startStr && currentPlayingCatchupStop === stopStr);
+    
     const startTimeDisplay = startStr.substring(8, 10) + ':' + startStr.substring(10, 12);
 
     let style = 'padding:6px 8px; border-bottom:1px solid #333; cursor:pointer; border-radius:4px; transition:background 0.2s;';
     let icon = '🕒';
     let rightTag = '';
 
-    if (isPlaying) {
+    if (isCatchupPlaying) {
+      style += 'color:#1677ff; font-weight:bold; background:rgba(22,119,255,0.15); border-left: 3px solid #1677ff;';
+      icon = '▶️';
+      rightTag = '<span style="font-size:11px;background:#1677ff;color:#fff;padding:1px 4px;border-radius:2px;margin-left:6px;">回看中</span>';
+    } else if (isPlaying) {
       style += 'color:#52c41a; font-weight:bold; background:rgba(82,196,26,0.1);';
       icon = '▶️';
       rightTag = '<span style="font-size:11px;background:#52c41a;color:#fff;padding:1px 4px;border-radius:2px;margin-left:6px;">直播中</span>';
     } else if (isPast) {
       style += 'color:#999;';
       icon = '⏪';
-      if (currentCatchupUrl) {
-        rightTag = '<span style="font-size:11px;background:#333;color:#ccc;padding:1px 4px;border-radius:2px;margin-left:6px;">点击回看</span>';
-      }
+      if (currentCatchupUrl) rightTag = '<span style="font-size:11px;background:#333;color:#ccc;padding:1px 4px;border-radius:2px;margin-left:6px;">点击回看</span>';
     } else {
       style += 'color:#aaa;';
     }
 
     let clickEvent = '';
     let hoverAttr = '';
-    if (isPlaying) {
+    
+    if (isPlaying && !isCatchupPlaying) {
       clickEvent = `onclick="playLiveFromEPG()"`;
       hoverAttr = `onmouseover="this.style.background='#2a2a2a'" onmouseout="this.style.background='rgba(82,196,26,0.1)'"`;
     } else if (isPast && currentCatchupUrl) {
-      // ★ 核心：获取它在全局节目列表中的真实索引
       const globalIndex = currentChannelProgrammes.findIndex(cp => cp.start === startStr && cp.stop === stopStr);
       clickEvent = `onclick="playCatchupFromEPG('${startStr}', '${stopStr}', ${globalIndex})"`;
-      hoverAttr = `onmouseover="this.style.background='#2a2a2a'" onmouseout="this.style.background='transparent'"`;
+      
+      if (isCatchupPlaying) {
+        hoverAttr = `onmouseover="this.style.background='rgba(22,119,255,0.2)'" onmouseout="this.style.background='rgba(22,119,255,0.15)'"`;
+      } else {
+        hoverAttr = `onmouseover="this.style.background='#2a2a2a'" onmouseout="this.style.background='transparent'"`;
+      }
     }
 
     html += `<div id="epg_item_${currentChannelProgrammes.indexOf(p)}" style="${style}" ${clickEvent} ${hoverAttr} title="${title}">
@@ -442,24 +509,21 @@ function renderEpgDayContent() {
   });
 
   container.innerHTML = html;
-
-  // 如果是今天，自动滚动到当前节目
+  
   if (currentEpgDay === todayStr) {
     setTimeout(() => {
-      const activeEl = container.querySelector('[style*="52c41a"]');
+      let activeEl = container.querySelector('[style*="1677ff"]') || container.querySelector('[style*="52c41a"]');
       if (activeEl) activeEl.scrollIntoView({ block: 'center' });
     }, 100);
   }
 }
 
-// 点击历史节目回看
 window.playCatchupFromEPG = function(startStr, stopStr, index) {
-  if (!currentCatchupUrl) {
-    alert('该频道不支持回看。');
-    return;
-  }
-  
+  if (!currentCatchupUrl) { alert('该频道不支持回看。'); return; }
   currentCatchupIndex = index !== undefined ? index : -1;
+
+  currentPlayingCatchupStart = startStr;
+  currentPlayingCatchupStop = stopStr;
 
   let catchupUrl = currentCatchupUrl
     .replace('${(b)yyyyMMddHHmmss}', startStr)
@@ -468,37 +532,75 @@ window.playCatchupFromEPG = function(startStr, stopStr, index) {
     .replace('{utcend}', stopStr);
 
   playStream(catchupUrl, true);
+  renderEpgDayContent();
   
-  // 自动滚动到当前点击的节目位置
   const el = document.getElementById(`epg_item_${index}`);
   if (el) el.scrollIntoView({ block: 'center' });
 };
 
-// 点击正在播的节目切回直播
 window.playLiveFromEPG = function() {
+  currentPlayingCatchupStart = null;
+  currentPlayingCatchupStop = null;
+
   const lineIdx = document.getElementById('webPlayerLineSource').value || 0;
   if (currentStreamUrls[lineIdx]) {
     playStream(currentStreamUrls[lineIdx], false);
+    renderEpgDayContent();
   }
 };
 
-// ==================== 自定义播放控制 ====================
 window.togglePlayPause = function() {
   const video = document.getElementById('webPlayerVideo');
-  if (!video.src && !video.currentSrc) return; 
+  const msg = document.getElementById('webPlayerMsg');
+  
+  if (!video) return; 
   
   if (video.paused) {
-    video.play().catch(() => {});
+    msg.textContent = '正在唤醒视频...';
+    
+    // ★ 只要点击播放，强行解除静音并设为 100%
+    video.muted = false;
+    video.volume = 1.0;
+    const volSlider = document.getElementById('volumeSlider');
+    if (volSlider) volSlider.value = 1.0;
+    const display = document.getElementById('timeDisplay');
+    if (display) display.textContent = '音量 100%';
+    
+    video.play().then(() => {
+      msg.textContent = '';
+      const centerBtn = document.getElementById('centerPlayBtn');
+      if (centerBtn) centerBtn.style.opacity = '0';
+      if (typeof mpegtsPlayer !== 'undefined' && mpegtsPlayer !== null) {
+        mpegtsPlayer.play().catch(()=>{});
+      }
+    }).catch(e => {
+      if (e.name === 'NotSupportedError') {
+        msg.innerHTML = '❌ 当前浏览器不支持该视频格式<br><span style="font-size:12px;color:#ff7875;">可能是 H.265/4K 编码，或您的设备浏览器不支持 MSE 流。</span>';
+      } else {
+        msg.textContent = '唤醒失败: ' + (e.name || '未知错误');
+      }
+    });
   } else {
-    video.pause();
+    if (typeof mpegtsPlayer !== 'undefined' && mpegtsPlayer !== null) {
+      mpegtsPlayer.pause();
+    } else {
+      video.pause();
+    }
+    const centerBtn = document.getElementById('centerPlayBtn');
+    if (centerBtn) centerBtn.style.opacity = '1';
   }
 };
 
 window.changeVolume = function(val) {
-  document.getElementById('webPlayerVideo').volume = val;
+  const video = document.getElementById('webPlayerVideo');
+  video.muted = false; 
+  video.volume = parseFloat(val);
+  const display = document.getElementById('timeDisplay');
+  if (display) {
+    display.textContent = '音量 ' + Math.round(val * 100) + '%';
+  }
 };
 
-// 监听视频状态，控制居中图标和底部控制栏
 document.addEventListener('DOMContentLoaded', () => {
   const video = document.getElementById('webPlayerVideo');
   const playIcon = document.getElementById('centerPlayIcon');
@@ -509,12 +611,8 @@ document.addEventListener('DOMContentLoaded', () => {
   
   if (!video || !playIcon || !pauseIcon || !container) return;
 
-  container.addEventListener('mousemove', () => {
-    controls.style.opacity = '1';
-  });
-  container.addEventListener('mouseleave', () => {
-    controls.style.opacity = '0';
-  });
+  container.addEventListener('mousemove', () => controls.style.opacity = '1');
+  container.addEventListener('mouseleave', () => controls.style.opacity = '0');
 
   video.addEventListener('play', () => {
     playIcon.style.display = 'none';
@@ -529,9 +627,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   video.addEventListener('waiting', () => {
-    if (video.paused) {
-      centerBtn.style.opacity = '1';
-    }
+    if (video.paused) centerBtn.style.opacity = '1';
   });
 });
 
