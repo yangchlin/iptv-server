@@ -1,11 +1,5 @@
 /**
  * telecomepg.js - 电信 EPG 前端逻辑
- *
- * 本次修复：
- * 1. 移除 tcAuthHeaders 中从 localStorage 读 token 的逻辑（服务端只认 Cookie）
- * 2. 配置弹窗中所有 ${c.xxx||''} 改用 escAttr 属性转义，防存储型 XSS
- * 3. 不再覆盖 window.closeModal（主 app.js 的 closeModal 优先）
- * 4. forceCloseModal 不再 appendChild 移动 modal 节点，只设置高 z-index
  */
 (function(){
   // ★ 属性转义：值放入 value="..." / 双引号属性里
@@ -18,7 +12,6 @@
       .replace(/'/g,'&#39;');
   }
 
-  // ★ 服务端只认 Cookie，不再注入 Authorization 头
   function tcAuthHeaders(){
     return {'Content-Type':'application/json'};
   }
@@ -57,57 +50,20 @@
       modal.classList.remove('active');
       modal.style.zIndex = '';
     }
-    // 关掉弹窗就停掉反推 key 的前端轮询（后台任务本身继续跑，进度仍在执行日志里）
+    // 关掉弹窗就停掉前端轮询（后台任务本身继续跑，再次打开会自动恢复状态）
     if (window.stopTelecomKeyPolling) window.stopTelecomKeyPolling();
   }
 
-// ========== 频道列表弹窗（纯查看本地缓存，不访问电信服务器）==========
-  // 弹窗内部状态
+// ========== 频道列表面板 ==========
   var _tcChEdit = { editing: false, list: [], updated: '' };
 
-  window.showTelecomChannelsModal = function() {
+  window.loadTelecomChannelsPage = function() {
     _tcChEdit = { editing: false, list: [], updated: '' };
-    document.getElementById('modalTitle').textContent = '📺 电信频道列表';
-    document.getElementById('modalBody').innerHTML = `
-      <div style="margin-bottom:8px;font-size:13px;color:var(--text-secondary);display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <span>本地缓存: <b id="tcCachedInfo">读取中...</b></span>
-          <label style="margin-left:15px;cursor:pointer;font-weight:normal;user-select:none" title="勾选后，生成的 m3u 和 txt 文件中会自动带上 group-title（调用『频道管理-合并工具配置』里的分组规则）">
-            <input type="checkbox" id="tcEnableGroup" onchange="telecomSaveChEdit()" style="width:auto;vertical-align:middle;margin-right:4px"> 
-            生成文件时自动分组 <span style="font-size:11px;color:#999">(规则见『合并工具配置』)</span>
-          </label>
-        </div>
-        <button class="btn btn-sm" id="tcEditToggleBtn" onclick="telecomToggleChEdit()">✏️ 编辑 / 追加</button>
-      </div>
-      <div id="tcChHint" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px"></div>
-      <div style="overflow:auto;max-height:54vh;border:1px solid var(--border);border-radius:6px">
-        <table class="table" id="tcChannelTable" style="width:100%;min-width:900px;margin:0;table-layout:fixed">
-          <thead style="position:sticky;top:0;background:#fafafa;z-index:1">
-            <tr>
-              <th style="width:130px">频道ID</th>
-              <th style="width:100px">频道名称</th>
-              <th style="width:150px">组播地址</th>
-              <th>RTSP回看地址</th>
-              <th style="width:80px;text-align:center" id="tcChOpTh">操作</th>
-            </tr>
-          </thead>
-          <tbody><tr><td colspan="5" style="text-align:center;padding:20px;color:#999">读取中...</td></tr></tbody>
-        </table>
-      </div>
-      <div id="tcChEditBar" style="display:none;margin-top:8px;gap:8px;align-items:center;flex-wrap:wrap">
-        <button class="btn btn-sm" onclick="telecomAddChRow()">➕ 添加频道</button>
-        <span style="font-size:11px;color:var(--text-secondary)">跨地市频道若拉不到EPG，channel_id可留空，但组播地址必填。</span>
-        <span style="flex:1"></span>
-        <button class="btn btn-sm btn-primary" onclick="telecomSaveChEdit(event)">💾 保存</button>
-        <button class="btn btn-sm" onclick="telecomCancelChEdit()">取消</button>
-      </div>
-      <div id="tcChReadHint" style="margin-top:8px;font-size:11px;color:var(--text-secondary);line-height:1.6">
-        只读查看本地缓存；点「✏️ 编辑 / 追加」可增删改。保存后自动重生成 sctv 和 XML。
-      </div>
-    `;
-    document.getElementById('modalActions').innerHTML =
-      `<button class="btn" onclick="forceCloseModal()">关闭</button>`;
-    forceShowModal();
+    var tb = document.querySelector('#tcChannelTable tbody');
+    if (tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#999">读取中...</td></tr>';
+    document.getElementById('tcEditToggleBtn').style.display = '';
+    document.getElementById('tcChEditBar').style.display = 'none';
+    document.getElementById('tcChReadHint').style.display = '';
     telecomLoadCachedChannels();
   };
 
@@ -121,7 +77,6 @@
         if (info) info.textContent = _tcChEdit.list.length + ' 个'
           + (d.updated ? '（' + d.updated + ' 更新）' : '');
         
-        // ★ 新增：回显开关
         var chk = document.getElementById('tcEnableGroup');
         if (chk) chk.checked = !!d.enable_group;
 
@@ -129,7 +84,7 @@
       })
       .catch(function(e){
         var tb = document.querySelector('#tcChannelTable tbody');
-        if (tb) tb.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:red">读取失败: ' + escAttr(e.message) + '</td></tr>';
+        if (tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:red">读取失败: ' + escAttr(e.message) + '</td></tr>';
       });
   };
 
@@ -158,7 +113,6 @@
         var inp1 = document.createElement('input');
         inp1.value = ch.channel_id || '';
         inp1.style.cssText = 'width:100%;font-size:12px;padding:2px';
-        // ★ 改动时标记为手工
         inp1.oninput = function(){ _tcChEdit.list[i].channel_id = this.value; _tcChEdit.list[i]._manual = true; };
         td1.appendChild(inp1);
       } else {
@@ -172,7 +126,6 @@
         inp2.value = ch.name || '';
         inp2.style.cssText = 'width:100%;font-size:12px;padding:2px';
         if (ch._disabled) inp2.style.textDecoration = 'line-through';
-        // ★ 改动时标记为手工
         inp2.oninput = function(){ _tcChEdit.list[i].name = this.value; _tcChEdit.list[i]._manual = true; };
         td2.appendChild(inp2);
       } else {
@@ -197,7 +150,6 @@
         inp3.value = ch.channel_url || '';
         inp3.placeholder = "239.94.x.x:5140";
         inp3.style.cssText = 'width:100%;font-size:12px;padding:2px';
-        // ★ 改动时标记为手工
         inp3.oninput = function(){ _tcChEdit.list[i].channel_url = this.value; _tcChEdit.list[i]._manual = true; };
         td3.appendChild(inp3);
       } else {
@@ -212,7 +164,6 @@
         inp4.value = ch.rtsp_url || '';
         inp4.placeholder = "rtsp://...（可空）";
         inp4.style.cssText = 'width:100%;font-size:12px;padding:2px';
-        // ★ 改动时标记为手工
         inp4.oninput = function(){ _tcChEdit.list[i].rtsp_url = this.value; _tcChEdit.list[i]._manual = true; };
         td4.appendChild(inp4);
       } else {
@@ -230,7 +181,6 @@
         b1.className = 'btn btn-sm';
         b1.textContent = ch._disabled ? '✅' : '⛔';
         b1.title = ch._disabled ? '恢复启用' : '禁用（不输出到 sctv）';
-        // ★ 点击禁用/启用也标记为手工
         b1.onclick = function(){ 
           _tcChEdit.list[i]._disabled = !_tcChEdit.list[i]._disabled; 
           _tcChEdit.list[i]._manual = true; 
@@ -293,7 +243,7 @@
     var cid = ((document.getElementById('tcNewCid')||{}).value || '').trim();
     var name = ((document.getElementById('tcNewName')||{}).value || '').trim();
     var url  = ((document.getElementById('tcNewUrl')||{}).value || '').trim();
-    var rtsp = ((document.getElementById('tcNewRtsp')||{}).value || '').trim(); // ★ 新增
+    var rtsp = ((document.getElementById('tcNewRtsp')||{}).value || '').trim();
 
     if (!name) { alert('请填写频道名称'); return }
     if (!cid && !url) { alert('channel_id 和组播地址至少填一个'); return }
@@ -302,7 +252,7 @@
     }
     
     _tcChEdit.list.push({
-      channel_id: cid, name: name, channel_url: url, rtsp_url: rtsp, _manual: true // ★ 保存 rtsp
+      channel_id: cid, name: name, channel_url: url, rtsp_url: rtsp, _manual: true
     });
     telecomRenderChTable();
   };
@@ -344,11 +294,11 @@
       });
   };
 
-// 「📺 获取频道列表 / 📺 更新频道列表」按钮仍然走这里（原逻辑不动）
+// 「📺 获取频道列表 / 📺 更新频道列表」按钮仍然走这里
 window.telecomGetChannels = function(){
   tcLog('从电信服务器获取频道列表中...');
   var tb = document.querySelector('#tcChannelTable tbody');
-  if (tb) tb.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:#999">正在请求后端，请稍候...</td></tr>';
+  if (tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#999">正在请求后端，请稍候...</td></tr>';
 
   tcReq('POST','get-channels',{}).then(function(j){
     var list = j.channels || [];
@@ -356,20 +306,17 @@ window.telecomGetChannels = function(){
     if (info) info.textContent = list.length + ' 个';
     tcLog('已刷新，共 ' + list.length + ' 个');
     
-    // ★ 直接调用新渲染函数，保持表头 4 列一致
     telecomLoadCachedChannels(); 
     
     tcFetchLogs().catch(function(){});
   }).catch(function(e){
     tcLog('获取失败: ' + tcErrMsg(e));
     var tb = document.querySelector('#tcChannelTable tbody');
-    if (tb) tb.innerHTML = '<tr><td colspan="4" style="text-align:center;padding:20px;color:red">请求失败: ' + escAttr(e.message) + '</td></tr>';
+    if (tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:red">请求失败: ' + escAttr(e.message) + '</td></tr>';
   });
 };
 
   // ========== 弹窗配置模块 ==========
-  // 当前访问地址（如 http://iptv.example.com）：epg_server_url / logo_url 的默认值。
-  // 后端也做同样的兜底：留空时按请求头自动补，生成 m3u/txt 时立即生效。
   function tcBaseUrl(){
     try{ return String(location.origin||'').replace(/\/+$/,'') }catch(e){ return '' }
   }
@@ -385,7 +332,6 @@ window.telecomGetChannels = function(){
     if (!box) return;
     var base = tcModalVal('mcEpgUrl'), name = tcModalVal('mcEpgName') || 'epg.xml', logo = tcModalVal('mcLogo');
     var epg = base ? (base.replace(/\/+$/,'') + '/' + name.replace(/^\/+/,'')) : '（留空：生成时自动用当前访问地址）';
-    // 台标：和本站 EPG 同源（或留空）走 /api/download/，指向外部台标服务器走 /logo/
     var sameSite = !logo || !base || logo.replace(/\/+$/,'') === base.replace(/\/+$/,'');
     var logoUrl = logo
       ? (logo.replace(/\/+$/,'') + (sameSite ? '/api/download/频道名.png' : '/logo/频道名.png'))
@@ -423,39 +369,52 @@ window.telecomGetChannels = function(){
     if (!b) return;
     b.textContent = text;
     b.disabled = !!disabled;
+    b.style.opacity = disabled ? '0.6' : '1';
+    b.style.cursor = disabled ? 'not-allowed' : 'pointer';
   }
 
   window.stopTelecomKeySearch = function(){
-    window.telecomKeyStatus('正在停止…');
+    window.telecomKeyStatus('正在向后台发送停止指令，当前计算批次完成后退出…');
+    setKeyBtn('⏳ 停止中', true); // 变灰并禁用点击
     tcReq('POST','find-key/stop',{}).catch(function(){});
   };
 
   window.startTelecomKeyPolling = function(){
     window.stopTelecomKeyPolling();
     _keyPollTimer = setInterval(function(){
-      if (!document.getElementById('mcFindKeyBtn')) {   // 弹窗已关闭
+      // 弹窗如果被关闭，停止前端轮询，但不重置 _keySearching 状态
+      if (!document.getElementById('mcFindKeyBtn')) {
         window.stopTelecomKeyPolling();
-        _keySearching = false;
         return;
       }
+      
       fetch('/api/telecom/find-key/status', {credentials:'include'})
         .then(function(r){ return r.json() })
         .then(function(s){
           if (s.running){
-            var pct = s.total ? Math.floor(s.tested * 100 / s.total) : 0;
-            window.telecomKeyStatus('反推中：' + Number(s.tested||0).toLocaleString() + ' / ' +
-              Number(s.total||0).toLocaleString() + '（' + pct + '%）');
+            _keySearching = true;
+            // 只有在按钮没变灰（即用户没点停止）的情况下，才更新进度文字
+            var b = document.getElementById('mcFindKeyBtn');
+            if (b && !b.disabled) {
+              var pct = s.total ? Math.floor(s.tested * 100 / s.total) : 0;
+              window.telecomKeyStatus('反推中：' + Number(s.tested||0).toLocaleString() + ' / ' +
+                Number(s.total||0).toLocaleString() + '（' + pct + '%）');
+            }
             return;
           }
+          
+          // 走到这里说明后台已经彻底停止（或者找到了，或者被手动停了）
           window.stopTelecomKeyPolling();
           _keySearching = false;
+          
           if (s.found){
             var k = document.getElementById('mcKey'); if (k) k.value = s.found;
             setKeyBtn('✅ 已找到', false);
             window.telecomKeyStatus('已找到 key：' + s.found + '（已写入配置，Authenticator 也已更新）', '#52c41a');
           } else {
             setKeyBtn('🔍 反推', false);
-            window.telecomKeyStatus(s.message || '反推结束，没有找到 key', '#ff4d4f');
+            var isStopped = s.message && s.message.indexOf('停止') > -1;
+            window.telecomKeyStatus(s.message || '反推结束，没有找到 key', isStopped ? '#faad14' : '#ff4d4f');
           }
         })
         .catch(function(){});
@@ -463,11 +422,24 @@ window.telecomGetChannels = function(){
   };
 
   window.findTelecomKey = function(){
-    if (_keySearching){ window.stopTelecomKeySearch(); return; }   // 再点一次＝停止
-    if (!tcModalVal('mcAuthn')){
+    // 如果正在跑，再点一次 = 停止
+    if (_keySearching){ 
+      window.stopTelecomKeySearch(); 
+      return; 
+    }
+    
+    var authn = tcModalVal('mcAuthn');
+    if (!authn){
       alert('需要先有 Authenticator（抓包值）才能反推 key：反推就是拿它去试解密');
       return;
     }
+    
+    if (authn.length % 16 !== 0 || authn.length < 32) {
+      alert('你填写的 Authenticator 长度不合法（当前为 ' + authn.length + ' 个字符）。\n\n正常的密文长度应为 16 的倍数。请检查是否复制完整！');
+      return;
+    }
+    
+    // 直接发请求，后端从配置文件里读取密文去跑（后台默默跑，找到自动写配置和 key.txt）
     tcReq('POST','find-key',{}).then(function(j){
       if (!j.success){ alert(j.message || '启动失败'); return; }
       _keySearching = true;
@@ -484,55 +456,112 @@ window.telecomGetChannels = function(){
       var base = tcBaseUrl();
       var epgServer = c.epg_server_url || base;
       var logoBase = c.logo_url || base;
-      // ★ 所有属性值统一用 escAttr
+      
       document.getElementById('modalTitle').textContent = '⚙️ 电信认证与EPG配置';
       document.getElementById('modalBody').innerHTML = `
-        <div style="font-weight:600;margin-bottom:8px;color:var(--primary);border-bottom:1px solid #eee;padding-bottom:4px">认证配置</div>
-        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px">
-          <div class="form-group" style="flex:1;min-width:220px"><label>启用定时任务</label><select id="mcEnabled"><option value="false">关闭</option><option value="true">开启</option></select>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">只控制电信的定时任务（频道刷新 / EPG 下载）；「执行认证」「获取频道」「下载EPG」这些手动按钮不受影响。</div>
+        <!-- ================= 基础参数 ================= -->
+        <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">基础参数</div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+          <div class="form-group" style="flex:0 0 140px;margin-bottom:0">
+            <label>启用定时任务</label>
+            <select id="mcEnabled"><option value="false">关闭</option><option value="true">开启</option></select>
+            <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.4">仅控制定时任务，手动操作不受影响。</div>
           </div>
-          <div class="form-group" style="flex:2;min-width:200px"><label>认证服务器</label><input id="mcAuthIP" value="${escAttr(c.AuthenticationIP)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>账号 (UserID)</label><input id="mcUserID" value="${escAttr(c.UserID)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>机顶盒 (mac)</label><input id="mcMac" value="${escAttr(c.mac)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>STBID</label><input id="mcStbid" value="${escAttr(c.STBID)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>终端IP (ip)</label><input id="mcIp" value="${escAttr(c.ip)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>STBType</label><input id="mcStbType" value="${escAttr(c.STBType)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>STBVersion</label><input id="mcStbVer" value="${escAttr(c.STBVersion)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>templateName</label><input id="mcTemplate" value="${escAttr(c.templateName)}"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>areaId</label><input id="mcArea" value="${escAttr(c.areaId)}"></div>
-          <div class="form-group" style="flex:2;min-width:200px"><label>Authenticator</label><input id="mcAuthn" value="${escAttr(c.Authenticator)}"></div>
-          <div class="form-group" style="flex:1;min-width:190px">
-            <label style="display:flex;align-items:center;gap:6px">加密 key
-              <button type="button" class="btn btn-sm" id="mcFindKeyBtn" onclick="findTelecomKey()" title="用下面的 Authenticator 穷举 8 位数字 key（后台跑，进度看执行日志）">🔍 反推</button>
-            </label>
-            <input id="mcKey" value="${escAttr(c.key)}">
+          <div class="form-group" style="flex:2.5 1 280px;margin-bottom:0">
+            <label>认证服务器</label>
+            <input id="mcAuthIP" value="${escAttr(c.AuthenticationIP)}">
+          </div>
+          <div class="form-group" style="flex:2 1 220px;margin-bottom:0">
+            <label>账号 (UserID)</label>
+            <input id="mcUserID" value="${escAttr(c.UserID)}">
+          </div>
+        </div>
+
+        <!-- ================= 设备信息 ================= -->
+        <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">设备信息</div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>终端IP (ip)</label>
+            <input id="mcIp" value="${escAttr(c.ip)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>机顶盒 (mac)</label>
+            <input id="mcMac" value="${escAttr(c.mac)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>STBID</label>
+            <input id="mcStbid" value="${escAttr(c.STBID)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>STBType</label>
+            <input id="mcStbType" value="${escAttr(c.STBType)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>STBVersion</label>
+            <input id="mcStbVer" value="${escAttr(c.STBVersion)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>templateName</label>
+            <input id="mcTemplate" value="${escAttr(c.templateName)}">
+          </div>
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label>areaId</label>
+            <input id="mcArea" value="${escAttr(c.areaId)}">
+          </div>
+          <div class="form-group" style="flex:2 1 280px;margin-bottom:0">
+            <label>UserAgent</label>
+            <input id="mcUA" value="${escAttr(c.UserAgent)}">
+          </div>
+        </div>
+
+        <!-- ================= 安全认证 ================= -->
+        <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">安全认证</div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
+          <div class="form-group" style="flex:100%;margin-bottom:0">
+            <label>Authenticator</label>
+            <input id="mcAuthn" value="${escAttr(c.Authenticator)}">
+          </div>
+          
+          <div class="form-group" style="flex:2 1 240px;margin-bottom:0">
+            <label>加密 key</label>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input id="mcKey" value="${escAttr(c.key)}" style="flex:1;min-width:0;">
+              <button type="button" class="btn btn-sm" id="mcFindKeyBtn" onclick="findTelecomKey()" title="用 Authenticator 穷举 8 位数字 key（后台执行）" style="flex-shrink:0;">🔍 反推</button>
+            </div>
             <div id="mcFindKeyStatus" style="display:none;font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.6"></div>
           </div>
-          <div class="form-group" style="flex:1;min-width:190px;padding-top:22px">
-            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:12px;cursor:pointer" title="勾选后：key 为空直接拒绝认证，不再回退到静态 Authenticator">
+          
+          <div class="form-group" style="flex:1 1 200px;margin-bottom:0;display:flex;align-items:flex-end;padding-bottom:8px">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:13px;cursor:pointer;margin:0" title="勾选后：key 为空直接拒绝认证，不再回退到静态 Authenticator">
               <input type="checkbox" id="mcRequireKey" style="width:auto" ${c.auth_require_key ? 'checked' : ''}> 必须用 key 生成 Authenticator
             </label>
           </div>
-          <div class="form-group" style="flex:1 1 100%"><label>UserAgent</label><input id="mcUA" value="${escAttr(c.UserAgent)}"></div>
+          
+          <div class="form-group" style="flex:1.5 1 180px;margin-bottom:0">
+            <label>r2h-token</label>
+            <input id="mcR2hToken" value="${escAttr(c.r2h_token || '')}" placeholder="填了就在地址后追加 &amp;r2h-token=…">
+          </div>
         </div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;flex-wrap:wrap">
-          <span style="font-weight:600;color:var(--primary)">EPG输出配置</span>
+
+        <!-- ================= EPG输出配置 ================= -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px">
+          <span style="font-weight:600;color:var(--primary);font-size:14px">EPG输出配置</span>
           <button type="button" class="btn btn-sm" onclick="fillTelecomBaseUrls()" title="把 epg_server_url 和 logo_url 都填成当前访问地址">↺ 用当前访问地址</button>
           <span style="font-size:11px;color:var(--text-secondary)">留空也行：生成 m3u/txt 时会自动补</span>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:8px">
-          <div class="form-group" style="flex:2;min-width:200px"><label>epg_server_url</label><input id="mcEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateTelecomUrlPreview()"></div>
-          <div class="form-group" style="flex:1;min-width:120px"><label>epgname</label><input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" oninput="updateTelecomUrlPreview()"></div>
-          <div class="form-group" style="flex:2;min-width:200px"><label>RTP2HTTPD（手工填）</label><input id="mcRtp" value="${escAttr(c.RTP2HTTPD)}" placeholder="http://192.168.1.1:5140"></div>
-          <div class="form-group" style="flex:2;min-width:200px"><label>logo_url</label><input id="mcLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateTelecomUrlPreview()"></div>
+        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>epg_server_url</label><input id="mcEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateTelecomUrlPreview()"></div>
+          <div class="form-group" style="flex:1 1 120px;margin-bottom:0"><label>epgname</label><input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" oninput="updateTelecomUrlPreview()"></div>
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>RTP2HTTPD（手工填）</label><input id="mcRtp" value="${escAttr(c.RTP2HTTPD)}" placeholder="http://192.168.1.1:5140"></div>
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>logo_url</label><input id="mcLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateTelecomUrlPreview()"></div>
         </div>
-        <div id="mcUrlPreview" style="font-size:12px;color:var(--text-secondary);line-height:1.9;background:#fafafa;border:1px dashed #ddd;border-radius:6px;padding:8px 10px;margin-bottom:12px"></div>
+
+        <div id="mcUrlPreview" style="font-size:12px;color:var(--text-secondary);line-height:1.9;background:#fafafa;border:1px dashed #ddd;border-radius:6px;padding:8px 12px;margin-bottom:12px"></div>
+        
         <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;border-top:1px dashed #ddd;padding-top:8px">
           💾 保存后写入 <code>data/config/app_config.json</code>：电信配置 + 定时任务 + 全局设置 + 外部 EPG 源都在<b>这一个文件</b>里。<br>
           💡 epg_server_url / logo_url 留空时自动用<b>当前访问地址</b>（即 <code>${escAttr(base || 'http://…')}</code>），
-          EPG 直链 = <code>地址/epgname</code>；台标 = <code>地址/api/download/频道名.png</code>（logo_url 与本站同源时，与「频道管理」一致），
-          若 logo_url 填的是外部台标服务器则沿用 <code>地址/logo/频道名.png</code>。用公网域名打开本页面保存，生成的就是公网链接。<br>
+          EPG 直链 = <code>地址/epgname</code>；台标 = <code>地址/api/download/频道名.png</code>。用公网域名打开本页面保存，生成的就是公网链接。<br>
           测试连接 / 执行认证 / 获取频道 / 下载 EPG 都只读这个文件，不再使用页面上的临时参数。
         </div>
       `;
@@ -543,12 +572,36 @@ window.telecomGetChannels = function(){
       forceShowModal();
       document.getElementById('mcEnabled').value = c.enabled ? 'true' : 'false';
       window.updateTelecomUrlPreview();
-    }).catch(function(e){ alert('获取配置失败: ' + e.message); });
+	  
+      // 查询反推任务当前状态，恢复界面
+      fetch('/api/telecom/find-key/status', {credentials:'include'})
+        .then(function(r){ return r.json() })
+        .then(function(s){
+          if (s.running) {
+             _keySearching = true;
+             setKeyBtn('⏹ 停止', false);
+             var pct = s.total ? Math.floor(s.tested * 100 / s.total) : 0;
+             window.telecomKeyStatus('反推中：' + Number(s.tested||0).toLocaleString() + ' / ' + Number(s.total||0).toLocaleString() + '（' + pct + '%）');
+             window.startTelecomKeyPolling();
+          } else if (s.found) {
+             var k = document.getElementById('mcKey'); if (k) k.value = s.found;
+             setKeyBtn('✅ 已找到', false);
+             window.telecomKeyStatus('已找到 key：' + s.found + '（已写入配置）', '#52c41a');
+          } else {
+             _keySearching = false;
+             setKeyBtn('🔍 反推', false);
+          }
+        }).catch(function(e){ 
+          // 静默处理：只在控制台打印，不弹窗打断用户
+          console.warn('查询反推状态失败（不影响其他配置）:', e);
+          _keySearching = false;
+          setKeyBtn('🔍 反推', false); 
+        });
+    });
   };
 
   window.saveTelecomConfigModal = function() {
     function getV(id){ var el = document.getElementById(id); return el ? el.value.trim() : ''; }
-    // ★ 留空就自动用当前访问地址：保存后定时任务也能用同一套链接
     var base = tcBaseUrl();
     var body = { config: {
         enabled: getV('mcEnabled') === 'true', AuthenticationIP: getV('mcAuthIP'), UserID: getV('mcUserID'), mac: getV('mcMac'),
@@ -558,6 +611,7 @@ window.telecomGetChannels = function(){
         epg_server_url: getV('mcEpgUrl') || base,
         epgname: getV('mcEpgName') || 'epg.xml',
         RTP2HTTPD: getV('mcRtp'),
+        r2h_token: getV('mcR2hToken'),
         logo_url: getV('mcLogo') || base
     }};
     tcReq('POST', 'config', body).then(function(j){
@@ -566,9 +620,7 @@ window.telecomGetChannels = function(){
     }).catch(function(e){ alert('保存失败: ' + e.message); });
   };
 
-  // ★ 不再覆盖 window.closeModal，避免影响主 app.js
-
-  // ========== 实时执行日志（长任务进度在这里滚，不走顶部进度条） ==========
+  // ========== 实时执行日志 ==========
   var _tcLogCursor = 0, _tcLogTimer = null;
 
   function tcLogPanel(){ return document.getElementById('tcLog'); }
@@ -593,7 +645,6 @@ window.telecomGetChannels = function(){
       });
   }
 
-  // 一次性拉全量（打开页面/切到电信页时用）
   window.refreshTelecomLog = function(){
     return fetch('/api/telecom/logs?since=0', {credentials:'include'})
       .then(function(r){ return r.json(); })
@@ -605,7 +656,6 @@ window.telecomGetChannels = function(){
       .catch(function(){});
   };
 
-  // 增量轮询（启动长任务后调用）
   window.startTelecomLogPolling = function(){
     window.stopTelecomLogPolling();
     var tick = function(){
@@ -621,7 +671,6 @@ window.telecomGetChannels = function(){
     if (_tcLogTimer){ clearInterval(_tcLogTimer); _tcLogTimer = null; }
   };
 
-  // 网络错误文案：别只甩一句 NetworkError
   function tcErrMsg(e){
     var m = (e && e.message) ? e.message : String(e || '');
     if (/NetworkError|Failed to fetch|Load failed|network error/i.test(m)) {
@@ -667,7 +716,8 @@ window.telecomGetChannels = function(){
   };
   window.telecomGenM3U = function(){ tcReq('POST','generate-m3u',{}).then(j=>tcLog('M3U已生成')).catch(e=>tcLog('失败: ' + e.message)); };
   window.telecomStatus = function(){ tcReq('GET','status').then(j=>tcLog('状态: ' + JSON.stringify(j))).catch(e=>tcLog('失败: ' + e.message)); };
-  // ========== 定时任务（频道 / EPG 各自独立） ==========
+  
+  // ========== 定时任务 ==========
   function setVal(id, v){ var el = document.getElementById(id); if (el) el.value = v; }
   function getVal(id){ var el = document.getElementById(id); return el ? el.value : ''; }
 
@@ -744,6 +794,5 @@ window.telecomGetChannels = function(){
     }).catch(function(e){ tcLog('❌ 保存失败: ' + e.message); });
   };
 
-  // ★ 新增这一行：暴露 forceCloseModal 到全局，供 onclick 调用
   window.forceCloseModal = forceCloseModal;
 })();

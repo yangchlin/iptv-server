@@ -24,6 +24,7 @@ from urllib.parse import urlparse
 import httpx
 
 from . import config
+from .logger import logger
 
 # 单文件大小上限（防 OOM）
 _JSON_MAX_BYTES = 50 * 1024 * 1024       # JSON：50MB

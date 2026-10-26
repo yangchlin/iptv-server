@@ -10,6 +10,7 @@
 - 存储：auth.json 原子写入（tmp + os.replace），权限收紧为 0600。
 - Cookie：secure 属性根据实际请求协议自动判断（HTTP 调试时也能正常登录）。
 - 并发：_active_tokens / _fail_counts 由 threading.Lock 保护。
+- ★ 本次修改：Cookie 名字动态加上端口号，解决同 IP 不同端口互相顶号的问题。
 """
 import datetime
 import hashlib
@@ -51,6 +52,19 @@ _active_tokens: dict = {}
 _fail_counts: dict = {}
 # 简单互斥锁：保护上面两个 dict 的读写
 _lock = threading.Lock()
+
+
+# ════════════════════════════════════════════════════════════════
+# 动态 Cookie 名称（解决多端口冲突）
+# ════════════════════════════════════════════════════════════════
+
+def _get_cookie_name(request: Request) -> str:
+    """根据请求的 Host 或 Port，动态生成 Cookie 名字"""
+    host = request.headers.get("host", "")
+    port = request.url.port or 80
+    if ":" in host:
+        port = host.split(":")[-1]
+    return f"auth_token_{port}"
 
 
 # ════════════════════════════════════════════════════════════════
@@ -216,7 +230,8 @@ def _lookup_token(token: str) -> Optional[dict]:
 
 def _extract_token(request: Request) -> str:
     """从 Cookie 或 X-Auth-Token 头中提取 Token。"""
-    return request.cookies.get("auth_token") or request.headers.get("X-Auth-Token", "")
+    cookie_name = _get_cookie_name(request)
+    return request.cookies.get(cookie_name) or request.headers.get("X-Auth-Token", "")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -351,7 +366,7 @@ async def login(request: Request, data: dict = Body(...)):
     # 7. 返回响应 + Cookie
     resp = JSONResponse({"success": True, "token": token, "message": "登录成功"})
     resp.set_cookie(
-        key="auth_token",
+        key=cookie_name,
         value=token,
         httponly=True,            # 禁止 JS 读取，降低 XSS 盗取风险
         max_age=TOKEN_TTL_SECONDS,
@@ -371,7 +386,7 @@ async def logout(request: Request):
             _active_tokens.pop(token, None)
 
     resp = JSONResponse({"success": True, "message": "已登出"})
-    resp.delete_cookie("auth_token", path="/")
+    resp.delete_cookie(cookie_name, path="/")
     return resp
 
 

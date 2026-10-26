@@ -21,7 +21,7 @@
   --border:#f0f0f0;
   --border-dark:#d9d9d9;
   --hover:#fafafa;
-  --sidebar-w:200px;
+  --sidebar-w:140px; /* 侧边栏宽度缩减到 140px */
   --radius:8px;
   --shadow: 0 1px 2px -2px rgba(0,0,0,.08), 0 3px 6px 0 rgba(0,0,0,.06), 0 5px 12px 4px rgba(0,0,0,.04);
 }
@@ -55,11 +55,11 @@ body{
 .tabs{
   display:flex;flex-direction:column;gap:4px;
   min-width:var(--sidebar-w);max-width:var(--sidebar-w);flex-shrink:0;
-  background:var(--card);padding:12px;border-radius:var(--radius);box-shadow:var(--shadow);
+  background:var(--card);padding:12px 8px;border-radius:var(--radius);box-shadow:var(--shadow);
   height:fit-content;
 }
 .tab{
-  padding:10px 16px;border-radius:6px;cursor:pointer;font-size:14px;
+  padding:10px 12px;border-radius:6px;cursor:pointer;font-size:13px;
   transition:all 0.2s;white-space:nowrap;text-align:left;color:var(--text-secondary);font-weight:500;
 }
 .tab:hover{background:var(--hover);color:var(--primary)}
@@ -108,16 +108,69 @@ textarea{resize:vertical;min-height:60px;font-family:monospace}
 .form-row{display:flex;gap:12px;flex-wrap:wrap}
 .form-row>*{flex:1;min-width:120px}
 
-/* 表格美化 */
-table{width:100%;border-collapse:collapse;margin:12px 0}
-th,td{padding:12px 16px;text-align:left;font-size:13px;border-bottom:1px solid var(--border)}
-th{background:#fafafa;font-weight:600;color:#262626;white-space:nowrap;position:relative;border-right:1px solid #f0f0f0}
-th:last-child{border-right:none}
-td{color:#595959}
-tbody tr:nth-child(even) td{background:#fcfcfc}
-tbody tr:hover td{background:#f5f5f5}
+/* ================== 表格视觉与编辑体验优化 ================== */
+table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    border: 1px solid #e1e4e8;
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 16px 0;
+    background: #fff;
+}
+th, td {
+    padding: 12px 14px;
+    text-align: left;
+    font-size: 13px;
+    border-bottom: 1px solid #f0f0f0;
+    border-right: 1px solid #f0f0f0;
+    vertical-align: middle;
+}
+th {
+    background: #f8f9fb;
+    font-weight: 600;
+    color: #333;
+    white-space: nowrap;
+    position: relative;
+    border-bottom: 2px solid #e1e4e8;
+}
+th:last-child, td:last-child { border-right: none; }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:nth-child(even) td { background: #fcfcfc; }
+tbody tr:hover td { background: #f0f7ff; transition: background 0.2s; }
+
+/* 强行覆盖表格内联的透明输入框（解决编辑时看起来乱糟糟的问题） */
+td input[type="text"], td input:not([type]), td select {
+    width: 100% !important;
+    padding: 6px 10px !important;
+    border: 1px solid #d9d9d9 !important;
+    background: #fff !important;
+    border-radius: 4px !important;
+    font-size: 13px !important;
+    color: #1f1f1f !important;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.02) inset !important;
+    transition: all 0.2s !important;
+    box-sizing: border-box !important;
+}
+td input[style*="border:none"], td input[style*="border: none"],
+td input[style*="background:transparent"], td input[style*="background: transparent"] {
+    border: 1px solid #d9d9d9 !important;
+    background: #fff !important;
+}
+td input:focus, td select:focus {
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.15) !important;
+    outline: none !important;
+}
+
+/* 表格里的操作按钮间距 */
+td .btn, td button { margin: 0 3px; }
+td .btn:first-child, td button:first-child { margin-left: 0; }
+td .btn:last-child, td button:last-child { margin-right: 0; }
+
 /* 固定表头 */
-#m3uEditTable thead th, #epgChTable thead th, #ovTable thead th, #epgExtractTable thead th, #epgPickTable thead th{position:sticky;top:0;background:#fafafa;z-index:2}
+#m3uEditTable thead th, #epgChTable thead th, #ovTable thead th, #epgExtractTable thead th, #epgPickTable thead th, #tcChannelTable thead th, #epgSourceTable thead th{position:sticky;top:0;background:#f8f9fb;z-index:2}
 
 /* 拖拽调整列宽/列顺序样式 */
 th .resize-handle{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:10}
@@ -215,7 +268,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <div class="login-logo"><svg viewBox="0 0 24 24" fill="currentColor" style="color:#007AFF"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z" fill="#fff"/></svg></div>
 <h2>IPTV 管理系统</h2>
 <div class="login-sub">请登录后继续使用</div>
-<!-- ★ 修复：去掉默认 666 用户名 -->
 <div class="form-g"><label>用户名</label><input id="loginUser" placeholder="请输入用户名" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()"></div>
 <div class="form-g"><label>密码</label><input id="loginPass" type="password" placeholder="请输入密码" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
 <button class="login-btn" onclick="doLogin()">登 录</button>
@@ -248,6 +300,7 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <div class="tabs" id="tabs">
 <div class="tab active" data-tab="dashboard">📊 仪表盘</div>
 <div class="tab" data-tab="telecom">📡 电信EPG</div>
+<div class="tab" data-tab="telecom_channels">📺 电信频道</div>
 <div class="tab" data-tab="epg">🌐 外部EPG</div>
 <div class="tab" data-tab="epgchannels">📋 EPG管理</div>
 <div class="tab" data-tab="m3u">📋 频道管理</div>
@@ -323,7 +376,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
     <h3 style="margin:0">📡 电信EPG信息 / 频道抓取</h3>
     <div>
-      <button class="btn" onclick="showTelecomChannelsModal()" style="margin-right:8px">📺 频道列表</button>
       <button class="btn btn-primary" onclick="showTelecomConfigModal()">⚙️ 认证与输出配置</button>
     </div>
   </div>
@@ -353,7 +405,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
       <span style="flex:1"></span>
       <span id="tcScheduleArrow" style="font-size:12px;color:var(--text-secondary)">▼ 展开</span>
     </div>
-    <!-- ★ 新增这个 div 用来包裹内容，方便折叠（默认收起） -->
     <div id="tcScheduleBody" style="display:none">
       <div style="display:flex;flex-wrap:wrap;gap:16px;padding:12px">
       <div style="flex:1;min-width:280px;border-right:1px solid var(--border);padding-right:16px">
@@ -430,6 +481,50 @@ body.row-dragging{cursor:grabbing;user-select:none}
   </div>
 </div>
 
+<!-- ============ 电信频道列表 ============ -->
+<div class="panel" id="panel-telecom_channels">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:10px">
+    <h3 style="margin:0">📺 电信频道列表</h3>
+    <div>
+      <span style="font-size:13px;color:var(--text-secondary);margin-right:15px">本地缓存: <b id="tcCachedInfo">读取中...</b></span>
+      <label style="margin-right:15px;cursor:pointer;font-weight:normal;user-select:none;font-size:13px" title="勾选后，生成的 m3u 和 txt 文件中会自动带上 group-title（调用『频道管理-合并工具配置』里的分组规则）">
+        <input type="checkbox" id="tcEnableGroup" onchange="telecomSaveChEdit()" style="width:auto;vertical-align:middle;margin-right:4px"> 
+        生成文件时自动分组
+      </label>
+      <button class="btn btn-sm" id="tcEditToggleBtn" onclick="telecomToggleChEdit()">✏️ 编辑 / 追加</button>
+    </div>
+  </div>
+  
+  <div id="tcChHint" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px"></div>
+
+  <div style="overflow:auto;max-height:60vh;border:1px solid var(--border);border-radius:6px">
+    <table class="table" id="tcChannelTable" style="width:100%;min-width:900px;margin:0;table-layout:fixed">
+      <thead style="position:sticky;top:0;background:#fafafa;z-index:1">
+        <tr>
+          <th style="width:130px">频道ID</th>
+          <th style="width:100px">频道名称</th>
+          <th style="width:150px">组播地址</th>
+          <th>RTSP回看地址</th>
+          <th style="width:80px;text-align:center" id="tcChOpTh">操作</th>
+        </tr>
+      </thead>
+      <tbody><tr><td colspan="5" style="text-align:center;padding:20px;color:#999">读取中...</td></tr></tbody>
+    </table>
+  </div>
+
+  <div id="tcChEditBar" style="display:none;margin-top:12px;gap:8px;align-items:center;flex-wrap:wrap">
+    <button class="btn btn-sm" onclick="telecomAddChRow()">➕ 添加频道</button>
+    <span style="font-size:11px;color:var(--text-secondary)">跨地市频道若拉不到EPG，channel_id可留空，但组播地址必填。</span>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm btn-primary" onclick="telecomSaveChEdit(event)">💾 保存</button>
+    <button class="btn btn-sm" onclick="telecomCancelChEdit()">取消</button>
+  </div>
+  
+  <div id="tcChReadHint" style="margin-top:8px;font-size:12px;color:var(--text-secondary);line-height:1.6">
+    只读查看本地缓存；点「✏️ 编辑 / 追加」可增删改。保存后自动重生成 sctv 和 XML。
+  </div>
+</div>
+
 <!-- ============ 外部EPG ============ -->
 <div class="panel" id="panel-epg">
 <div style="display:flex;flex-direction:column">
@@ -446,7 +541,7 @@ body.row-dragging{cursor:grabbing;user-select:none}
       <tr>
         <th style="width:40px;text-align:center">☰</th>
         <th style="width:220px;text-align:left">URL<span class="resize-handle"></span></th>
-        <th style="text-align:left">备注<span class="resize-handle"></span></th> <!-- 不设宽度，自动占满剩余 -->
+        <th style="text-align:left">备注<span class="resize-handle"></span></th>
         <th style="width:80px;text-align:center">规则<span class="resize-handle"></span></th>
         <th style="width:80px;text-align:center">状态<span class="resize-handle"></span></th>
         <th style="width:120px;text-align:center">操作</th>

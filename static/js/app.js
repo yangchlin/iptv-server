@@ -432,6 +432,7 @@ document.querySelectorAll('.tab').forEach(tab=>{
   try {
     if(tab.dataset.tab==='dashboard'){refreshStatus();refreshGlobalLogs().catch(()=>{})}
     if(tab.dataset.tab==='telecom'){if(window.loadTelecomSchedule)loadTelecomSchedule();if(window.refreshTelecomLog)refreshTelecomLog();refreshTelecomStatus()}
+	if(tab.dataset.tab==='telecom_channels'){if(window.loadTelecomChannelsPage)loadTelecomChannelsPage();} // ★ 新增独立 Tab 加载
     if(tab.dataset.tab==='channels'){renderChannels();setTimeout(reapplyColWidths,50);refreshTelecomStatus()}
     if(tab.dataset.tab==='epg'){renderEpgSources();renderEpgExtracts();setTimeout(reapplyColWidths,100);refreshTelecomStatus();refreshEpgPickSummary();loadCronSettings()}
     if(tab.dataset.tab==='m3u'){renderM3uFiles();setTimeout(reapplyColWidths,50);loadM3uConfigPanel()}
