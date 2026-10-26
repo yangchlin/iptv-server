@@ -319,6 +319,7 @@ async def login(request: Request, data: dict = Body(...)):
     限流：429 {"detail": "登录失败次数过多，请稍后再试"}
     """
     ip = _client_ip(request)
+    cookie_name = _get_cookie_name(request)
 
     # 1. 限流检查
     if _is_rate_limited(ip):
@@ -381,6 +382,7 @@ async def login(request: Request, data: dict = Body(...)):
 async def logout(request: Request):
     """登出：服务端立即失效该 Token，并删除 Cookie。"""
     token = _extract_token(request)
+    cookie_name = _get_cookie_name(request)
     if token:
         with _lock:
             _active_tokens.pop(token, None)
