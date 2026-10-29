@@ -45,6 +45,22 @@ _PRIVATE_NETS = [
 # 全局 HTTP 客户端
 _client: Optional[httpx.AsyncClient] = None
 
+def get_epg_failures() -> list:
+    """返回失败列表副本（供路由读取）。"""
+    return [
+        {"url": v["url"], "remark": v.get("remark", ""),
+         "error": v["error"], "ts": v["ts"]}
+        for v in _epg_failures.values()
+    ]
+
+
+def clear_epg_failure(url: str = ""):
+    """url 为空 → 清空所有告警；否则只清指定 url。"""
+    if url:
+        _epg_failures.pop(url, None)
+    else:
+        _epg_failures.clear()
+
 
 def get_client() -> httpx.AsyncClient:
     """获取（或懒创建）全局 AsyncClient。"""
@@ -339,12 +355,37 @@ def set_source_cache_enabled(source: dict, enabled: bool) -> str:
         return ""
 
 
+async def _fetch_epg_raw(url: str):
+    """单次抓取 EPG 原始字节。返回 (raw: bytes|None, err: str)。"""
+    try:
+        client = get_client()
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            raw = await _read_limited(resp, _EPG_MAX_BYTES)
+            if raw is None:
+                return None, f"文件超过 {_EPG_MAX_BYTES // 1024 // 1024}MB 上限"
+            return raw, ""
+    except httpx.HTTPStatusError as e:
+        return None, f"HTTP {e.response.status_code}"
+    except httpx.TimeoutException:
+        return None, "超时：服务器 30 秒内没有响应（网络不通或该源太慢）"
+    except httpx.RequestError as e:
+        detail = str(e) or type(e).__name__
+        return None, f"请求失败: {detail}"
+    except Exception as e:
+        return None, f"未知错误: {e}"
+
+
 async def download_epg_source(source: dict,
                               progress_callback=None,
                               log_callback=None,
                               index: int = 0,
-                              total: int = 1) -> Optional[dict]:
-    """下载外部 EPG 源文件（支持 gzip 自动解压）。"""
+                              total: int = 1,
+                              max_retries: int = 2) -> Optional[dict]:
+    """下载外部 EPG 源文件（gzip 自动解压；超时/网络错误自动重试）。
+
+    ★ 新增：失败信息记录到 _epg_failures，供前端导航栏红点提示。
+    """
     url = source.get("url", "")
     rule = source.get("rule", "auto")
     if not url:
@@ -353,13 +394,11 @@ async def download_epg_source(source: dict,
         msg = f"[EPG] ({index}/{total}) URL 不允许: {url}"
         if log_callback:
             log_callback(msg)
-        return {"url": url, "rule": rule, "success": False, "error": "URL 不允许", "path": ""}
+        return {"url": url, "rule": rule, "success": False,
+                "error": "URL 不允许", "path": ""}
 
     result = {"url": url, "rule": rule, "success": False, "error": "", "path": ""}
-
     try:
-        # ★ 保存名：源里填了 cache_name 就用它，否则按「域名_文件名_短哈希」，
-        #   两个源都叫 txml.gz 也不会互相覆盖（旧版本会直接盖掉）
         save_name = epg_cache_name(source)
 
         msg = f"[下载] EPG源({index}/{total}) {url} → {save_name}"
@@ -368,13 +407,40 @@ async def download_epg_source(source: dict,
         if progress_callback:
             await progress_callback(msg)
 
-        client = get_client()
-        async with client.stream("GET", url) as resp:
-            resp.raise_for_status()
-            raw = await _read_limited(resp, _EPG_MAX_BYTES)
-            if raw is None:
-                result["error"] = f"文件超过 {_EPG_MAX_BYTES // 1024 // 1024}MB 上限"
-                return result
+        # ── 带重试的抓取（只对超时/网络/5xx 重试）──
+        raw, err = None, ""
+        for attempt in range(max_retries + 1):
+            raw, err = await _fetch_epg_raw(url)
+            if raw is not None:
+                break
+            retriable = ("超时" in err) or ("请求失败" in err) or ("HTTP 5" in err)
+            if attempt < max_retries and retriable:
+                if log_callback:
+                    log_callback(
+                        f"[下载] EPG源({index}/{total}) 第 {attempt + 1} 次失败"
+                        f"（{err}），{2 * (attempt + 1)} 秒后重试…"
+                    )
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            break
+
+        if raw is None:
+            result["error"] = err
+            _epg_failures[url] = {
+                "url": url,
+                "remark": str(source.get("remark", "") or ""),
+                "error": err,
+                "ts": time.time(),
+            }
+            msg3 = f"[EPG] ({index}/{total}) 失败: {url} ✗ {err}"
+            if log_callback:
+                log_callback(msg3)
+            if progress_callback:
+                await progress_callback(msg3)
+            return result
+
+        # 成功：清掉告警
+        _epg_failures.pop(url, None)
 
         # gzip 自动解压
         if url.endswith(".gz") or raw[:2] == b"\x1f\x8b":
@@ -397,7 +463,6 @@ async def download_epg_source(source: dict,
         result["path"] = str(save_path)
         result["content"] = xml_text
 
-        # 清掉旧命名缓存（txml.xml 这种），避免合并时同一份数据算两遍
         legacy = remove_legacy_cache(url, save_name)
         if legacy and log_callback:
             log_callback(f"[下载] 已清理旧命名缓存: {', '.join(legacy)}")
@@ -408,22 +473,16 @@ async def download_epg_source(source: dict,
         if progress_callback:
             await progress_callback(msg2)
 
-    except httpx.HTTPStatusError as e:
-        result["error"] = f"HTTP {e.response.status_code}"
-    except httpx.TimeoutException:
-        result["error"] = "超时：服务器 30 秒内没有响应（网络不通或该源太慢）"
-    except httpx.RequestError as e:
-        detail = str(e) or type(e).__name__
-        result["error"] = f"请求失败: {detail}"
     except Exception as e:
         result["error"] = f"未知错误: {e}"
-
-    if result.get("error"):
-        msg3 = f"[EPG] ({index}/{total}) 失败: {url} ✗ {result['error']}"
+        _epg_failures[url] = {
+            "url": url,
+            "remark": str(source.get("remark", "") or ""),
+            "error": result["error"],
+            "ts": time.time(),
+        }
         if log_callback:
-            log_callback(msg3)
-        if progress_callback:
-            await progress_callback(msg3)
+            log_callback(f"[EPG] ({index}/{total}) 失败: {url} ✗ {result['error']}")
 
     return result
 
@@ -481,18 +540,19 @@ def cleanup_old_files(log_callback=None) -> list:
         except OSError:
             pass
 
-    # EPG 缓存
+    # EPG 缓存（含被禁用后改名挂起的 *.xml.disabled，否则禁用源永远不会被清理）
     epg_cache = config.CONFIG_DIR / "epg_cache"
     if epg_cache.exists():
-        for f in epg_cache.glob("*.xml"):
-            try:
-                if time.time() - f.stat().st_mtime > 7 * 86400:
-                    f.unlink()
-                    msg = f"[清理] 删除过期EPG缓存: {f.name}"
-                    do_log(msg)
-                    deleted.append(msg)
-            except OSError:
-                pass
+        for pattern in ("*.xml", "*.xml.disabled"):
+            for f in epg_cache.glob(pattern):
+                try:
+                    if time.time() - f.stat().st_mtime > 7 * 86400:
+                        f.unlink()
+                        msg = f"[清理] 删除过期EPG缓存: {f.name}"
+                        do_log(msg)
+                        deleted.append(msg)
+                except OSError:
+                    pass
 
     if not deleted:
         do_log("[清理] 无需清理")

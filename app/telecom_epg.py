@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""电信 EPG 抓取核心模块
+"""电信 EPG 抓取核心模块（华为平台）
 
 要点：
 - 频道名统一用 config.safe_filename()
 - telecom_sync_to_server 写 JSON 用原子写（tmp + replace）
 - 敏感字段脱敏日志；HTTP 明文警告；指数退避；调试落盘开关
+- 平台相关：本文件只实现华为平台；中兴平台在 zte_epg.py
 """
 import json
 import logging
@@ -18,6 +19,7 @@ from urllib.parse import urlparse, quote
 import requests
 
 from . import config
+from .channel_groups import apply_group_rules as _apply_group_rules
 from .logger import logger
 from .crypt_1 import PRPCrypt
 
@@ -26,40 +28,6 @@ telecom_logger = logging.getLogger(__name__)
 telecom_logger.setLevel(logging.INFO)
 
 TELECOM_CONFIG_KEY = "telecom"
-
-# 频道分组自动推断逻辑
-def _guess_group(name: str) -> str:
-    """默认的智能猜测兜底"""
-    if "CCTV" in name or "CGTN" in name: return "央视频道"
-    if any(x in name for x in ("卫视","凤凰","教育","CETV","卡通","少儿")): return "卫视频道"
-    if "SCTV" in name or "四川" in name: return "省内频道"
-    if any(x in name for x in ("泸州","宜宾","内江","雅安","攀枝花","自贡","眉山","凉山","彝语","德阳","CDTV", "广元", "乐山", "成都", "绵阳")): return "地市频道"
-    return "其他频道"
-
-def _apply_group_rules(name: str, group_rules: dict) -> str:
-    """根据『合并文件-分组规则』计算最终的分组"""
-    if not group_rules or not group_rules.get("rules"):
-        return _guess_group(name)
-
-    rules = sorted(
-        [r for r in group_rules["rules"] if r.get("enabled", True)],
-        key=lambda r: r.get("priority", 999),
-    )
-    default_g = (group_rules.get("default_group") or "").strip()
-
-    for rule in rules:
-        gname = (rule.get("name") or "").strip()
-        if not gname: continue
-        mt = rule.get("match_type", "keyword")
-        if mt == "keyword":
-            kws = [k.strip() for k in (rule.get("keywords") or []) if k and k.strip()]
-            if any(kw in name for kw in kws):
-                return gname
-        elif mt == "channels":
-            chs = [c.strip() for c in (rule.get("channels") or []) if c and c.strip()]
-            if name in chs:
-                return gname
-    return default_g or _guess_group(name)
 
 
 def _mask(s: Any, keep: int = 3) -> str:
@@ -75,44 +43,32 @@ def _mask(s: Any, keep: int = 3) -> str:
 # ════════════════════════════════════════════════════════════════
 
 def get_telecom_config() -> Dict[str, Any]:
-    settings = config.get_settings()
-    telecom = settings.get(TELECOM_CONFIG_KEY, {})
-    defaults = {
-        "enabled": False,
-        "AuthenticationIP": "http://182.138.3.142:8082",
-        "key": "",
-        "UserID": "",
-        "mac": "",
-        "STBID": "",
-        "ip": "",
-        "STBType": "",
-        "STBVersion": "",
-        "UserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Authenticator": "",
-        "auth_require_key": False,
-        "RTP2HTTPD": "",
-        "r2h_token": "",
-        "enable_group": False,
-        "templateName": "",
-        "areaId": "",
-        "epg_server_url": "",
-        "epgname": "epg.xml.gz",
-        "logo_url": "",
-        "merge_output_files": True,
-    }
-    for k, v in defaults.items():
-        telecom.setdefault(k, v)
-    return telecom
+    """华为平台配置（settings.telecom）。"""
+    return config.get_platform_config("huawei")
 
 
 def save_telecom_config(config_data: Dict[str, Any]) -> bool:
     try:
-        settings = config.get_settings()
-        settings[TELECOM_CONFIG_KEY] = config_data
-        return config.save_settings(settings)
+        return config.save_platform_config("huawei", config_data)
     except Exception as e:
         logger.error(f"保存电信配置失败: {e}")
         return False
+
+
+def telecom_platform_status() -> Dict[str, Any]:
+    """华为平台状态摘要（供 /api/telecom/status 与前端使用）。"""
+    cfg = get_telecom_config()
+    cached = config.get_telecom_channels()
+    return {
+        "platform": "huawei",
+        "platform_label": config.platform_label("huawei"),
+        "enabled": bool(cfg.get("enabled", False)),
+        "configured": bool(cfg.get("UserID") and cfg.get("mac") and cfg.get("STBID")),
+        "config_error": _auth_config_error(cfg),
+        "AuthenticationIP": cfg.get("AuthenticationIP", ""),
+        "channels": len(cached.get("channels", []) or []),
+        "updated": cached.get("updated", ""),
+    }
 
 
 # ════════════════════════════════════════════════════════════════
@@ -473,9 +429,22 @@ def telecom_download_epg(host, cookies, user_token, stbid,
             "stbid": stbid, "SupportHD": "1",
             "UserID": config_data.get("UserID", ""), "Lang": "1",
         }
-        resp = requests.post(epg_url, headers=headers, cookies=cookies,
-                             data=data, timeout=30)
-        resp.raise_for_status()
+        # ★ 电信服务器偶发超时，单次失败直接丢节目。照认证流程一样做 3 次退避重试。
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(epg_url, headers=headers, cookies=cookies,
+                                     data=data, timeout=30)
+                resp.raise_for_status()
+                break
+            except requests.exceptions.RequestException:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+        if resp is None:
+            result["message"] = "下载EPG失败: 重试耗尽"
+            return result
 
         match = re.search(r'parent\.jsonBackLookStr\s*=\s*(\[.*?\]);', resp.text, re.DOTALL)
         if not match:

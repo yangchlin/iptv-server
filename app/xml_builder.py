@@ -66,8 +66,12 @@ def _escape_xml(text: str) -> str:
 def build_xml(
     progress_callback: Optional[Callable] = None,
     log_callback: Optional[Callable] = None,
+    platform: Optional[str] = None,
 ) -> dict:
     """构建完整的 EPG XML。
+
+    platform 为空时使用当前生效平台（华为 / 中兴），只读取该平台的
+    `_telecom` / `_zte` JSON，避免两个平台的数据混在一起。
 
     同步重活：调用方需用 await asyncio.to_thread(build_xml, ...) 包装。
     """
@@ -76,8 +80,10 @@ def build_xml(
 
     try:
         _start = time.time()
+        active = config.normalize_platform(platform or config.get_active_platform())
+        epg_suffix = config.platform_epg_suffix(active)
         if log_callback:
-            log_callback("[XML] 开始生成 XML...")
+            log_callback(f"[XML] 开始生成 XML（平台: {config.platform_label(active)}）...")
 
         epg_channels = config.get_epg_channels()
         extracts = config.get_epg_extracts()
@@ -116,22 +122,27 @@ def build_xml(
             added_channels.add(tvg_id)
 
             lines.append(f' <channel id="{_escape_xml(tvg_id)}">')
-            lines.append(f'  <display-name lang="zh">{_escape_xml(ch.get("tvg_name", name))}</display-name>')
+            # ★ 修改：支持逗号/斜杠分隔的多个频道名
+            tvg_name_str = str(ch.get("tvg_name", name) or "")
+            for dn in re.split(r'[,，|/]', tvg_name_str):
+                dn = dn.strip()
+                if dn:
+                    lines.append(f'  <display-name lang="zh">{_escape_xml(dn)}</display-name>')
             lines.append(' </channel>')
             channel_count += 1
 
             ch_progs = 0
             for d in date_range:
                 date_str = d.strftime("%Y%m%d")
-                # 优先读电信版，兜底普通版；两个路径都尝试新规则 + 历史原始名
-                telecom_path = _find_json_path(name, config.TELECOM_EPG_SUFFIX, date_str)
+                # 优先读当前平台的电信版，兜底普通版；两个路径都尝试新规则 + 历史原始名
+                telecom_path = _find_json_path(name, epg_suffix, date_str)
                 normal_path = _find_json_path(name, "", date_str)
                 json_path = telecom_path if telecom_path.exists() else normal_path
 
                 # ★ 新增：如果带 4K 的频道没拉到数据，自动去借用同名（去掉4K）普通频道的节目单
                 if not json_path.exists() and name.upper().endswith("4K"):
                     fallback_name = name[:-2].strip()
-                    telecom_path = _find_json_path(fallback_name, config.TELECOM_EPG_SUFFIX, date_str)
+                    telecom_path = _find_json_path(fallback_name, epg_suffix, date_str)
                     normal_path = _find_json_path(fallback_name, "", date_str)
                     json_path = telecom_path if telecom_path.exists() else normal_path
 
@@ -169,16 +180,6 @@ def build_xml(
                 ch_with_data += 1
             else:
                 ch_without_data += 1
-                for d in date_range:
-                    for hour in range(24):
-                        start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                        end_dt = start_dt + datetime.timedelta(minutes=30)
-                        start_str = start_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                        end_str = end_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                        lines.append(f' <programme channel="{_escape_xml(tvg_id)}" start="{start_str}" stop="{end_str}">')
-                        lines.append('  <title lang="zh">暂无节目单</title>')
-                        lines.append(' </programme>')
-                        programme_count += 1
 
             if idx % 10 == 0 or idx == total_epg:
                 if log_callback:
@@ -192,24 +193,6 @@ def build_xml(
                 f"[XML] 频道处理完成: {ch_with_data} 个有节目, {ch_without_data} 个无数据, "
                 f"JSON文件: 找到{json_found}个, 解析成功{json_parsed}个, 失败{json_errors}个"
             )
-
-        # 占位频道 9999
-        if "9999" not in added_channels:
-            lines.append(' <channel id="9999">')
-            lines.append('  <display-name lang="zh">暂无节目单</display-name>')
-            lines.append(' </channel>')
-            channel_count += 1
-
-            for d in date_range:
-                for hour in range(24):
-                    start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                    end_dt = start_dt + datetime.timedelta(minutes=30)
-                    start_str = start_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                    end_str = end_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                    lines.append(f' <programme channel="9999" start="{start_str}" stop="{end_str}">')
-                    lines.append('  <title lang="zh">暂无节目单</title>')
-                    lines.append(' </programme>')
-                    programme_count += 1
 
         lines.append('</tv>')
 
@@ -267,32 +250,37 @@ def build_xml(
 
 
 def build_telecom_xml(log_callback: Optional[Callable] = None,
-                      progress_callback: Optional[Callable] = None) -> dict:
-    """把电信 EPG 单独生成一份 epg_telecom.xml（+ .gz）。
+                      progress_callback: Optional[Callable] = None,
+                      platform: Optional[str] = None) -> dict:
+    """把当前电信平台的 EPG 单独生成一份平台专用 XML（+ .gz）。
 
-    放在与 epg.xml 相同的目录（config.XML_DIR），所以外部 EPG 和电信 EPG
-    的 XML 都在 data/xml/ 下：
-        epg.xml          —— 全部频道（外部 + 电信，按 EPG 管理列表合并）
-        epg_telecom.xml  —— 只含电信频道
+    两个平台各是各的文件，不会互相覆盖：
+        epg_telecom.xml  —— 华为平台（data/config/telecom_channels.json + _telecom JSON）
+        epg_zte.xml      —— 中兴平台（data/config/zte_channels.json + _zte JSON）
 
     数据来源：
-      频道：data/config/telecom_channels.json
-      节目：data/json/<频道名>_telecom_<日期>.json（telecom_sync_to_server 写入）
+      频道：data/config/<platform>_channels.json
+      节目：data/json/<频道名><平台后缀>_<日期>.json
     """
     result = {"success": False, "path": "", "channel_count": 0,
               "programme_count": 0, "error": ""}
 
     try:
-        channels = config.get_telecom_channels().get("channels", [])
+        active = config.normalize_platform(platform or config.get_active_platform())
+        epg_suffix = config.platform_epg_suffix(active)
+        xml_name = config.platform_xml_name(active)
+        channels = config.get_platform_channels(active).get("channels", [])
         if not channels:
-            result["error"] = "没有电信频道数据（请先执行「获取频道列表」）"
+            result["error"] = (f"没有{config.platform_label(active)}的频道数据"
+                               f"（请先执行「获取频道列表」）")
             return result
 
         today = datetime.date.today()
         date_range = [today + datetime.timedelta(days=i) for i in range(-6, 3)]
 
         lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-                 '<tv generator-info-name="iptv-server 电信EPG" source-info-name="电信IPTV">']
+                 f'<tv generator-info-name="iptv-server {config.platform_label(active)}EPG" '
+                 f'source-info-name="电信IPTV">']
         channel_count = 0
         programme_count = 0
         placeholder_count = 0
@@ -305,18 +293,23 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
             added.add(name)
 
             lines.append(f' <channel id="{_escape_xml(name)}">')
-            lines.append(f'  <display-name lang="zh">{_escape_xml(name)}</display-name>')
+            # ★ 修改开始：支持多个别名
+            for dn in re.split(r'[,，|/]', name):
+                dn = dn.strip()
+                if dn:
+                    lines.append(f'  <display-name lang="zh">{_escape_xml(dn)}</display-name>')
+            # ★ 修改结束
             lines.append(' </channel>')
             channel_count += 1
 
             ch_progs = 0
             for d in date_range:
                 date_str = d.strftime("%Y%m%d")
-                json_path = _find_json_path(name, config.TELECOM_EPG_SUFFIX, date_str)
+                json_path = _find_json_path(name, epg_suffix, date_str)
                 # ★ 新增：如果带 4K 的频道没拉到数据，自动去借用同名（去掉4K）普通频道的节目单
                 if not json_path.exists() and name.upper().endswith("4K"):
                     fallback_name = name[:-2].strip()
-                    json_path = _find_json_path(fallback_name, config.TELECOM_EPG_SUFFIX, date_str)
+                    json_path = _find_json_path(fallback_name, epg_suffix, date_str)
 
                 if not json_path.exists():
                     continue
@@ -349,27 +342,13 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
                     ch_progs += 1
 
             # 该频道一条节目都没有：补占位，避免播放器拿到空频道
-            if ch_progs == 0:
-                for d in date_range:
-                    for hour in range(24):
-                        start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                        end_dt = start_dt + datetime.timedelta(minutes=30)
-                        lines.append(
-                            f' <programme channel="{_escape_xml(name)}" '
-                            f'start="{start_dt.strftime("%Y%m%d%H%M00")} +0800" '
-                            f'stop="{end_dt.strftime("%Y%m%d%H%M00")} +0800">'
-                        )
-                        lines.append('  <title lang="zh">暂无节目单</title>')
-                        lines.append(' </programme>')
-                        programme_count += 1
-                        placeholder_count += 1
 
         lines.append('</tv>')
         xml_content = "\n".join(lines) + "\n"
 
-        xml_path = config.XML_DIR / "epg_telecom.xml"
-        tmp_xml = config.XML_DIR / "epg_telecom.xml.tmp"
-        tmp_gz = config.XML_DIR / "epg_telecom.xml.gz.tmp"
+        xml_path = config.XML_DIR / xml_name
+        tmp_xml = config.XML_DIR / (xml_name + ".tmp")
+        tmp_gz = config.XML_DIR / (xml_name + ".gz.tmp")
 
         with open(tmp_xml, "w", encoding="utf-8", newline="\n") as f:
             f.write(xml_content)
@@ -379,7 +358,7 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
         tmp_gz.write_bytes(gz_buf.getvalue())
 
         os.replace(str(tmp_xml), str(xml_path))
-        os.replace(str(tmp_gz), str(config.XML_DIR / "epg_telecom.xml.gz"))
+        os.replace(str(tmp_gz), str(config.XML_DIR / (xml_name + ".gz")))
 
         for tmp in (tmp_xml, tmp_gz):
             try:
@@ -396,11 +375,13 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
 
         if log_callback:
             log_callback(
-                f"[XML-电信] 完成: {channel_count} 频道, {programme_count} 节目"
-                f"（其中占位 {placeholder_count}）→ {xml_path.name}"
+                f"[XML-{config.platform_label(active)}] 完成: {channel_count} 频道, "
+                f"{programme_count} 节目（其中占位 {placeholder_count}）→ {xml_path.name}"
             )
         if progress_callback:
-            progress_callback(f"[XML-电信] 完成: {channel_count} 频道 / {programme_count} 节目")
+            progress_callback(
+                f"[XML-{config.platform_label(active)}] 完成: {channel_count} 频道 / "
+                f"{programme_count} 节目")
 
     except Exception as e:
         result["error"] = str(e)

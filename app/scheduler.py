@@ -128,16 +128,17 @@ class TaskScheduler:
         s[f"{prefix}_last_run"] = datetime.datetime.now().isoformat()
         config.save_settings(s)
 
-    def _auto_merge_into_epg(self, channels: list):
+    def _auto_merge_into_epg(self, channels: list, platform: str = None):
         """把电信频道自动并入「EPG 管理」，让电信节目能进入主 epg.xml。"""
         try:
             if not config.get_settings().get("telecom_auto_add_to_epg", True):
                 return
-            merged = config.merge_telecom_channels_into_epg(channels)
+            p = platform or config.get_active_platform()
+            merged = config.merge_telecom_channels_into_epg(channels, p)
             if merged.get("added"):
                 logger.log(
-                    f"[任务] 已自动加入 {merged['added']} 个电信频道到「EPG 管理」，"
-                    f"当前共 {merged['total']} 个",
+                    f"[任务] 已自动加入 {merged['added']} 个{config.platform_label(p)}频道到"
+                    f"「EPG 管理」，当前共 {merged['total']} 个",
                     category="电信频道",
                 )
         except Exception as e:
@@ -150,6 +151,11 @@ class TaskScheduler:
     async def daily_task(self):
         if self.current_task and not self.current_task.done():
             print("[调度] 上一个任务仍在运行，跳过")
+            return
+        # ★ 与手动按钮 / 电信任务共用同一把锁：避免两份任务同时下载 EPG 源互相覆盖缓存
+        from .progress import download_progress
+        if download_progress._running:
+            logger.log("[任务] 有其他任务在运行，跳过本次定时任务", category="失败")
             return
         self.current_task = asyncio.create_task(self._run_daily())
 
@@ -190,6 +196,8 @@ class TaskScheduler:
                              or epg_name_map.get(str(ext.get("logic_id", "") or ""))
                              or name)
 
+                # ★ 修复：与 _run_extract_to_json 一致，按 source_url 精确匹配缓存，
+                #   避免多个源都有同名频道时从错误的源里提取。
                 programmes = []
                 for cf in epg_parser.resolve_cache_files(epg_cache, ext.get("source_url", "")):
                     try:
@@ -308,16 +316,15 @@ class TaskScheduler:
                              or name)
 
                 programmes = []
-                if epg_cache.exists():
-                    for cf in sorted(epg_cache.glob("*.xml")):
-                        try:
-                            cache_text = cf.read_text(encoding="utf-8")
-                        except Exception:
-                            continue
-                        progs = epg_parser.extract_programmes(cache_text, rule, name)
-                        if progs:
-                            programmes.extend(progs)
-                            break
+                for cf in epg_parser.resolve_cache_files(epg_cache, ext.get("source_url", "")):
+                    try:
+                        cache_text = cf.read_text(encoding="utf-8")
+                    except Exception:
+                        continue
+                    progs = epg_parser.extract_programmes(cache_text, rule, name)
+                    if progs:
+                        programmes.extend(progs)
+                        break
 
                 date_progs = defaultdict(list)
                 for prog in programmes:
@@ -373,16 +380,28 @@ class TaskScheduler:
             return False
 
     # ════════════════════════════════════════════════════════════
-    # 电信频道 / EPG 任务
+    # 电信频道 / EPG 任务（按当前生效平台分发到华为 / 中兴）
     # ════════════════════════════════════════════════════════════
 
     async def telecom_channels_task(self):
+        if config.get_active_platform() == "zte":
+            await self._zte_channels_task()
+        else:
+            await self._huawei_channels_task()
+
+    async def telecom_epg_task(self):
+        if config.get_active_platform() == "zte":
+            await self._zte_epg_task()
+        else:
+            await self._huawei_epg_task()
+
+    async def _huawei_channels_task(self):
         from . import telecom_epg
         if not self._should_run_now("telecom_channels"):
             logger.log("[任务] 频道刷新: 未到间隔周期，跳过", category="电信频道")
             return
 
-        logger.log("[任务] ====== 开始刷新电信频道 ======", category="电信频道")
+        logger.log("[任务] ====== 开始刷新华为频道 ======", category="电信频道")
         try:
             cfg = telecom_epg.get_telecom_config()
             if not cfg.get("enabled"):
@@ -401,7 +420,7 @@ class TaskScheduler:
             )
             if r["success"]:
                 config.save_telecom_channels(r["channels"])
-                self._auto_merge_into_epg(r["channels"])
+                self._auto_merge_into_epg(r["channels"], "huawei")
                 self._mark_last_run("telecom_channels")
                 logger.log(f"[任务] 频道已保存: {len(r['channels'])} 个", category="EPG")
             else:
@@ -409,13 +428,13 @@ class TaskScheduler:
         except Exception as e:
             logger.log(f"[任务] 频道刷新异常: {e}", category="失败")
 
-    async def telecom_epg_task(self):
+    async def _huawei_epg_task(self):
         from . import telecom_epg
         if not self._should_run_now("telecom_epg"):
             logger.log("[任务] EPG下载: 未到间隔周期，跳过", category="电信EPG")
             return
 
-        logger.log("[任务] ====== 开始电信EPG下载 ======", category="电信EPG")
+        logger.log("[任务] ====== 开始华为EPG下载 ======", category="电信EPG")
         try:
             cfg = telecom_epg.get_telecom_config()
             if not cfg.get("enabled"):
@@ -445,7 +464,7 @@ class TaskScheduler:
                     return
                 channels = r["channels"]
                 config.save_telecom_channels(channels)
-                self._auto_merge_into_epg(channels)
+                self._auto_merge_into_epg(channels, "huawei")
 
             if auth is None:
                 auth = await asyncio.to_thread(telecom_epg.telecom_auth, cfg)
@@ -474,26 +493,100 @@ class TaskScheduler:
 
             sync = await asyncio.to_thread(telecom_epg.telecom_sync_to_server, all_epg, cfg)
             logger.log(f"[任务] EPG同步: {sync.get('message','')}", category="EPG")
-            await asyncio.to_thread(telecom_epg.generate_sctv_files, channels, cfg)
-
-            await asyncio.to_thread(xml_builder.build_xml, log_callback=lambda m: logger.log(m))
-
-            # 电信专用 XML（data/xml/epg_telecom.xml）
-            tr = await asyncio.to_thread(
-                xml_builder.build_telecom_xml,
-                log_callback=lambda m: logger.log(m, category="电信EPG"),
-            )
-            if tr.get("success"):
-                logger.log(
-                    f"[任务] 电信XML: {tr['channel_count']} 频道 / {tr['programme_count']} 节目",
-                    category="电信EPG")
+            if config.get_active_platform() == "huawei":
+                await asyncio.to_thread(telecom_epg.generate_sctv_files, channels, cfg)
             else:
-                logger.log(f"[任务] 电信XML 跳过: {tr.get('error', '')}", category="电信EPG")
+                logger.log("[任务] 平台已切换，跳过 sctv 生成", category="电信EPG")
+
+            if config.get_active_platform() != "huawei":
+                logger.log("[任务] 平台已切换，跳过 XML 重建", category="电信EPG")
+            else:
+                await asyncio.to_thread(xml_builder.build_xml,
+                                        log_callback=lambda m: logger.log(m),
+                                        platform="huawei")
+
+                # 华为专用 XML（data/xml/epg_telecom.xml）
+                tr = await asyncio.to_thread(
+                    xml_builder.build_telecom_xml,
+                    log_callback=lambda m: logger.log(m, category="电信EPG"),
+                    platform="huawei",
+                )
+                if tr.get("success"):
+                    logger.log(
+                        f"[任务] 华为XML: {tr['channel_count']} 频道 / {tr['programme_count']} 节目",
+                        category="电信EPG")
+                else:
+                    logger.log(f"[任务] 华为XML 跳过: {tr.get('error', '')}", category="电信EPG")
 
             self._mark_last_run("telecom_epg")
-            logger.log("[任务] ====== 电信EPG下载完成 ======", category="定时任务")
+            logger.log("[任务] ====== 华为EPG下载完成 ======", category="定时任务")
         except Exception as e:
             logger.log(f"[任务] EPG下载异常: {e}", category="失败")
+
+    # ── 中兴平台任务 ──
+
+    async def _zte_channels_task(self):
+        from . import zte_epg
+        if not self._should_run_now("telecom_channels"):
+            logger.log("[任务] 频道刷新: 未到间隔周期，跳过", category="电信频道")
+            return
+
+        logger.log("[任务] ====== 开始刷新中兴频道 ======", category="电信频道")
+        try:
+            cfg = zte_epg.get_zte_config()
+            if not cfg.get("enabled"):
+                logger.log("[任务] 中兴未启用，跳过", category="电信频道")
+                return
+
+            auth = await asyncio.to_thread(zte_epg.zte_auth, cfg)
+            if not auth.get("success"):
+                logger.log(f"[任务] 中兴认证失败: {auth.get('message', '')}", category="失败")
+                return
+
+            r = await asyncio.to_thread(zte_epg.zte_get_channels, cfg, auth["session"])
+            if not r.get("success"):
+                logger.log(f"[任务] 获取中兴频道失败: {r.get('message', '')}", category="失败")
+                return
+
+            old = config.get_zte_channels().get("channels", [])
+            channels = zte_epg.merge_manual_channels(old, r["channels"])
+            config.save_zte_channels(channels)
+            self._auto_merge_into_epg(channels, "zte")
+            if config.get_active_platform() == "zte":
+                await asyncio.to_thread(zte_epg.zte_generate_sctv_files, channels, cfg)
+            self._mark_last_run("telecom_channels")
+            logger.log(f"[任务] 中兴频道已保存: {len(channels)} 个", category="EPG")
+        except Exception as e:
+            logger.log(f"[任务] 中兴频道刷新异常: {e}", category="失败")
+
+    async def _zte_epg_task(self):
+        from . import zte_epg
+        if not self._should_run_now("telecom_epg"):
+            logger.log("[任务] EPG下载: 未到间隔周期，跳过", category="电信EPG")
+            return
+
+        logger.log("[任务] ====== 开始中兴EPG下载 ======", category="电信EPG")
+        try:
+            cfg = zte_epg.get_zte_config()
+            if not cfg.get("enabled"):
+                logger.log("[任务] 中兴未启用，跳过", category="电信EPG")
+                return
+
+            auto_fetch = config.get_settings().get("telecom_epg_auto_fetch_channels", True)
+            days = cfg.get("epg_days", 8)
+            result = await asyncio.to_thread(
+                zte_epg.run_zte_job, cfg, days, False, auto_fetch,
+                lambda m: logger.log(m, category="电信EPG"),
+            )
+            if result.get("success"):
+                self._mark_last_run("telecom_epg")
+                logger.log(
+                    f"[任务] 中兴EPG完成: {result.get('ok', 0)} 成功 / {result.get('fail', 0)} 失败",
+                    category="定时任务")
+            else:
+                logger.log(f"[任务] 中兴EPG失败: {result.get('message', '')}", category="失败")
+        except Exception as e:
+            logger.log(f"[任务] 中兴EPG异常: {e}", category="失败")
 
 
 scheduler = TaskScheduler()

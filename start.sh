@@ -20,6 +20,8 @@ mkdir -p \
     "${DATA_ROOT}/icons" \
     "${DATA_ROOT}/logs" \
     "${DATA_ROOT}/config" \
+    "${DATA_ROOT}/config/epg_cache" \
+    "${DATA_ROOT}/tools" \
     "${DATA_ROOT}/share"
 
 # 清掉上次异常退出残留的 pid（容器重启时容器内文件系统会保留）

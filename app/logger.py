@@ -45,11 +45,22 @@ class Logger:
         self._logs = {}                # date -> list of log lines
         self._global_buffer = []       # 全局环形缓冲
         self._max_global = max_global
-        self._extra_sink = None        # 可选：实时外发回调（如电信任务面板）
+        self._extra_sinks = []         # 可选：实时外发回调（电信 / 中兴任务面板各订一份）
 
     def set_extra_sink(self, fn):
-        """注册实时外发回调：每条日志写完后额外回调一次 fn(消息)。"""
-        self._extra_sink = fn
+        """注册实时外发回调（会替换已有回调）。fn(消息)。"""
+        self._extra_sinks = [fn] if fn else []
+
+    def add_extra_sink(self, fn):
+        """追加一个实时外发回调（多个面板可以同时订阅）。"""
+        if fn and fn not in self._extra_sinks:
+            self._extra_sinks.append(fn)
+
+    def remove_extra_sink(self, fn):
+        try:
+            self._extra_sinks.remove(fn)
+        except ValueError:
+            pass
 
     def _get_log_path(self, date_str: str = None) -> Path:
         if date_str is None:
@@ -111,10 +122,10 @@ class Logger:
         except OSError as e:
             print(f"[日志] 写入失败: {e}")
 
-        # 实时外发（电信任务面板订阅用；异常不能影响正常日志）
-        if self._extra_sink is not None:
+        # 实时外发（电信 / 中兴任务面板订阅用；异常不能影响正常日志）
+        for sink in list(self._extra_sinks):
             try:
-                self._extra_sink(safe_msg)
+                sink(safe_msg)
             except Exception:
                 pass
 

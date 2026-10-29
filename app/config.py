@@ -50,10 +50,38 @@ COLUMN_WIDTHS_FILE = CONFIG_DIR / "column_widths.json"
 COLUMN_ORDER_FILE = CONFIG_DIR / "column_order.json"
 AUTH_FILE = CONFIG_DIR / "auth.json"
 BASE_EPG_XML = CONFIG_DIR / "base_epg.xml"        # 状态接口里展示是否存在
-TELECOM_CHANNELS_FILE = CONFIG_DIR / "telecom_channels.json"
+# 电信平台：华为（原实现） / 中兴（新增）
+# 两个平台的频道缓存、EPG 数据、输出文件全部各自独立，互不覆盖。
+TELECOM_CHANNELS_FILE = CONFIG_DIR / "telecom_channels.json"     # 华为频道缓存
+ZTE_CHANNELS_FILE = CONFIG_DIR / "zte_channels.json"             # 中兴频道缓存
 FCC_PRESETS_FILE = CONFIG_DIR / "fcc_presets.json"
-TELECOM_EPG_SUFFIX = "_telecom"
+TELECOM_EPG_SUFFIX = "_telecom"     # 华为 EPG JSON 后缀
+ZTE_EPG_SUFFIX = "_zte"             # 中兴 EPG JSON 后缀
 GROUP_RULES_FILE = CONFIG_DIR / "group_rules.json"
+
+DEFAULT_PLATFORM = "huawei"
+PLATFORM_LABEL = {
+    "huawei": "华为平台",
+    "zte": "中兴平台",
+}
+# 平台 → EPG JSON 后缀 / 平台专用 XML 文件名
+PLATFORM_EPG_SUFFIX = {
+    "huawei": TELECOM_EPG_SUFFIX,
+    "zte": ZTE_EPG_SUFFIX,
+}
+PLATFORM_XML_NAME = {
+    "huawei": "epg_telecom.xml",
+    "zte": "epg_zte.xml",
+}
+# 平台 → 频道缓存文件 / 配置段（settings[段名]）
+PLATFORM_CHANNELS_FILE = {
+    "huawei": TELECOM_CHANNELS_FILE,
+    "zte": ZTE_CHANNELS_FILE,
+}
+PLATFORM_CONFIG_KEY = {
+    "huawei": "telecom",
+    "zte": "telecom_zte",
+}
 
 # ── 保留策略 ──
 LOG_RETENTION_DAYS = 7
@@ -73,6 +101,8 @@ DEFAULT_SETTINGS = {
     "xml_gz_enabled": True,
     "telecom": {
         "enabled": False,
+        # ★ 当前生效的电信平台：huawei / zte。切换由 /api/telecom/platform 控制
+        "platform": DEFAULT_PLATFORM,
         "AuthenticationIP": "http://182.138.3.142:8082",
         "key": "",
         "UserID": "",
@@ -93,6 +123,38 @@ DEFAULT_SETTINGS = {
         "epgname": "epg.xml",
         "logo_url": "",
         "merge_output_files": True,
+    },
+    # ── 中兴平台（四川部分地市使用）──
+    # 与华为完全独立的配置段：切换平台不会覆盖、也不会混用另一边的数据。
+    "telecom_zte": {
+        "enabled": False,
+        "server": "http://182.137.9.86:8080",   # IPTVServer（抓包得到）
+        "UserID": "",
+        "Authenticator": "",                    # 抓包得到的一长串十六进制
+        "StbIP": "",
+        "STBID": "",
+        "UserToken": "",
+        "UserGroupNMB": "55",
+        "EPGGroupNMB": "",
+        "LastTermno": "0",
+        "stbinfo": "undefined",
+        "UserAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        # 输出
+        "epg_server_url": "",
+        "epgname": "epg.xml",
+        "logo_url": "",
+        # 组播转单播（udpxy / msd_lite 等）地址，如 http://192.168.100.1:4022
+        "live_proxy": "",
+        # 回看代理地址（本程序的 RTSP 代理或自建），如 rtsp://192.168.100.1:554
+        "replay_proxy": "",
+        "enable_group": False,
+        "epg_days": 8,                          # 回看天数（含当天，最多 10）
+        # 内置 RTSP 代理（回看用）
+        "rtsp_proxy_enabled": False,
+        "rtsp_proxy_port": 554,
+        "rtsp_upstream": "",                    # 真实 RTSP 服务器（抓包得到的 CDN 地址）
+        "rtsp_upstream_port": 554,
+        "rtsp_proxy_bad_server": "",            # 需要丢弃的重定向目标（可空）
     },
     "telecom_channels_cron_enabled": False,
     "telecom_channels_cron_mode": "daily",
@@ -275,6 +337,10 @@ def _deep_merge_telecom(base: dict, override: Any) -> dict:
     return merged
 
 
+# 需要按子字典深合并的配置段（华为 / 中兴各一段）
+_DEEP_MERGE_SECTIONS = ("telecom", "telecom_zte")
+
+
 def get_settings() -> dict:
     """读取配置（app_config.json）。深拷贝默认值，避免污染 DEFAULT_SETTINGS。"""
     data = _load_app()
@@ -285,8 +351,8 @@ def get_settings() -> dict:
     for k, v in data.items():
         if k in ("epg_sources", "config_version"):
             continue
-        if k == "telecom":
-            merged["telecom"] = _deep_merge_telecom(merged["telecom"], v)
+        if k in _DEEP_MERGE_SECTIONS:
+            merged[k] = _deep_merge_telecom(merged.get(k, {}), v)
         else:
             merged[k] = v
     return merged
@@ -305,16 +371,16 @@ def save_settings(settings: Any) -> bool:
     for k, v in current.items():
         if k in ("epg_sources", "config_version"):
             continue
-        if k == "telecom":
-            merged["telecom"] = _deep_merge_telecom(merged["telecom"], v)
+        if k in _DEEP_MERGE_SECTIONS:
+            merged[k] = _deep_merge_telecom(merged.get(k, {}), v)
         else:
             merged[k] = v
 
     for k, v in settings.items():
         if k in ("epg_sources", "config_version"):
             continue
-        if k == "telecom":
-            merged["telecom"] = _deep_merge_telecom(merged["telecom"], v)
+        if k in _DEEP_MERGE_SECTIONS:
+            merged[k] = _deep_merge_telecom(merged.get(k, {}), v)
         else:
             merged[k] = v
 
@@ -380,11 +446,85 @@ def save_column_order(order: Any) -> bool:
 
 
 # ════════════════════════════════════════════════════════════════
-# 电信频道缓存
+# 电信平台（华为 / 中兴）
 # ════════════════════════════════════════════════════════════════
 
-def get_telecom_channels() -> dict:
-    data = _load_json(TELECOM_CHANNELS_FILE, {"channels": [], "updated": ""})
+def normalize_platform(platform: Any = "") -> str:
+    """把任意输入规范成合法平台名；非法值回落到默认平台。"""
+    p = str(platform or "").strip().lower()
+    return p if p in PLATFORM_LABEL else DEFAULT_PLATFORM
+
+
+def get_active_platform() -> str:
+    """当前生效的电信平台（settings.telecom.platform）。"""
+    data = _load_app()
+    telecom = data.get("telecom") if isinstance(data, dict) else None
+    if not isinstance(telecom, dict):
+        return DEFAULT_PLATFORM
+    return normalize_platform(telecom.get("platform"))
+
+
+def set_active_platform(platform: Any) -> bool:
+    """切换当前平台（只改 settings.telecom.platform，不动两个平台的配置和缓存）。"""
+    p = str(platform or "").strip().lower()
+    if p not in PLATFORM_LABEL:
+        return False
+    settings = get_settings()
+    telecom = settings.get("telecom")
+    if not isinstance(telecom, dict):
+        telecom = copy.deepcopy(DEFAULT_SETTINGS["telecom"])
+    telecom["platform"] = p
+    settings["telecom"] = telecom
+    return save_settings(settings)
+
+
+def platform_label(platform: Any = "") -> str:
+    return PLATFORM_LABEL.get(normalize_platform(platform), "")
+
+
+def platform_epg_suffix(platform: Any = "") -> str:
+    return PLATFORM_EPG_SUFFIX[normalize_platform(platform)]
+
+
+def platform_xml_name(platform: Any = "") -> str:
+    return PLATFORM_XML_NAME[normalize_platform(platform)]
+
+
+def get_platform_config(platform: Any = "") -> dict:
+    """读取某个平台的配置段（telecom / telecom_zte），已补齐默认值。"""
+    p = normalize_platform(platform)
+    section = PLATFORM_CONFIG_KEY[p]
+    settings = get_settings()
+    cfg = settings.get(section, {})
+    if not isinstance(cfg, dict):
+        cfg = {}
+    defaults = copy.deepcopy(DEFAULT_SETTINGS.get(section, {}))
+    for k, v in defaults.items():
+        cfg.setdefault(k, v)
+    return cfg
+
+
+def save_platform_config(platform: Any, config_data: Any) -> bool:
+    """保存某个平台的配置段。华为段要保留 platform 字段（平台选择不属于某一家）。"""
+    p = normalize_platform(platform)
+    if not isinstance(config_data, dict):
+        return False
+    section = PLATFORM_CONFIG_KEY[p]
+    settings = get_settings()
+    settings[section] = copy.deepcopy(config_data)
+    if p == "huawei":
+        settings[section]["platform"] = get_active_platform()
+    return save_settings(settings)
+
+
+def platform_channels_file(platform: Any = "") -> Path:
+    return PLATFORM_CHANNELS_FILE[normalize_platform(platform)]
+
+
+def get_platform_channels(platform: Any = "") -> dict:
+    """读取某个平台的频道缓存（华为 telecom_channels.json / 中兴 zte_channels.json）。"""
+    path = platform_channels_file(platform)
+    data = _load_json(path, {"channels": [], "updated": ""})
     if not isinstance(data, dict):
         return {"channels": [], "updated": ""}
     channels = data.get("channels", [])
@@ -393,28 +533,51 @@ def get_telecom_channels() -> dict:
     return {"channels": channels, "updated": data.get("updated", "") or ""}
 
 
-def save_telecom_channels(channels: list, updated: Optional[str] = None) -> bool:
+def save_platform_channels(platform: Any, channels: Any,
+                           updated: Optional[str] = None) -> bool:
     if not isinstance(channels, list):
         return False
-    return _save_json(TELECOM_CHANNELS_FILE, {
+    return _save_json(platform_channels_file(platform), {
         "channels": channels,
         "updated": updated or _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     })
 
 
-def merge_telecom_channels_into_epg(telecom_channels: list) -> dict:
+# ════════════════════════════════════════════════════════════════
+# 电信频道缓存
+# ════════════════════════════════════════════════════════════════
+
+def get_telecom_channels() -> dict:
+    return get_platform_channels("huawei")
+
+
+def save_telecom_channels(channels: list, updated: Optional[str] = None) -> bool:
+    return save_platform_channels("huawei", channels, updated)
+
+
+def get_zte_channels() -> dict:
+    return get_platform_channels("zte")
+
+
+def save_zte_channels(channels: list, updated: Optional[str] = None) -> bool:
+    return save_platform_channels("zte", channels, updated)
+
+
+def merge_telecom_channels_into_epg(telecom_channels: list,
+                                    platform: Any = "") -> dict:
     """把电信频道批量并入「EPG 管理」列表（按频道名去重，已存在则跳过）。
 
     这样电信节目才能进入主 epg.xml —— xml_builder 只输出 epg_channels 里的频道，
-    而电信数据以 `<频道名>_telecom_<日期>.json` 存放，频道名对上就能被优先取用。
+    而电信数据以 `<频道名><平台后缀>_<日期>.json` 存放，频道名对上就能被取用。
 
     规则：
     - 只新增，不删除、不改动已有频道的排序和配置（幂等，重复执行不会重复添加）
-    - tvg_id 用频道名（与 telecom.m3u 的 tvg-id 一致），重名冲突时自动加 `_2` 后缀
-    - 标记 source_type=telecom，便于在「EPG 管理」里辨认
+    - tvg_id 用频道名（与 m3u 的 tvg-id 一致），重名冲突时自动加 `_2` 后缀
+    - 标记 source_type=telecom，便于在「EPG 管理」里辨认；source_remark 标平台
 
     返回 {"added", "skipped", "total"}（失败时多一个 "error"）
     """
+    p = normalize_platform(platform or get_active_platform())
     result = {"added": 0, "skipped": 0, "total": 0}
     if not isinstance(telecom_channels, list):
         return result
@@ -433,7 +596,6 @@ def merge_telecom_channels_into_epg(telecom_channels: list) -> dict:
             continue
 
         tvg_id = str(ch.get("tvg_id", "") or name).strip()
-        suffix = 2
         # 如果 tvg_id 冲突，就在英文后面加后缀
         suffix = 2
         base_tvg_id = tvg_id
@@ -449,7 +611,7 @@ def merge_telecom_channels_into_epg(telecom_channels: list) -> dict:
             "enabled": True,
             "sort_order": len(epg_channels),
             "source_type": "telecom",
-            "source_remark": "自动来自电信频道列表",
+            "source_remark": "电信源" if p == "huawei" else "中兴源",
         })
         names.add(name)
         tvg_ids.add(tvg_id)
@@ -532,8 +694,8 @@ def migrate_to_app_config() -> dict:
     for k, v in old_settings.items():
         if k in ("epg_sources", "config_version"):
             continue
-        if k == "telecom":
-            merged["telecom"] = _deep_merge_telecom(merged["telecom"], v)
+        if k in _DEEP_MERGE_SECTIONS:
+            merged[k] = _deep_merge_telecom(merged.get(k, {}), v)
         else:
             merged[k] = v
     merged["config_version"] = 2

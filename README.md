@@ -38,8 +38,15 @@ docker compose logs -f
 ### ① 登录并改密码
 访问 `http://<机器IP>:5673` → 默认 `666 / 666` → 「👤 账户密码」改掉。
 
-### ② 配置电信（可选，但推荐）
-「📡 电信EPG」→「⚙️ 电信认证与EPG配置」填 `UserID / mac / STBID / key / Authenticator` → **保存**
+### ② 选择电信平台，再配置
+
+> **四川各地市的电信平台不一样**（有的地市是华为，有的是中兴），同一套参数不能混用。
+> 「📡 电信EPG」页顶部先选 **🟦 华为平台 / 🟧 中兴平台**，选好后再填参数。
+> 切换平台时会弹窗警告（因为配置过一次后，切错城市会导致频道地址/节目单对不上），确认后才会切换。
+
+#### ②-A 华为平台
+
+「📡 电信EPG」→「⚙️ 认证与输出配置」填 `UserID / mac / STBID / key / Authenticator` → **保存**
 → 「测试连接」→「执行认证」→「更新频道列表」
 
 > 保存后写入 `app_config.json` 的 `telecom` 段；之后所有认证/取频道/下载 EPG 都只读这个文件，页面参数不再参与。
@@ -63,6 +70,27 @@ docker compose logs -f
 
 > 注意：服务器只校验最终提交的 `Authenticator`，不校验 `key`（`key` 从不上传）。所以「没填 key 也能认证成功」意味着那串静态 `Authenticator` 在你这个平台上仍然有效，不是绕过认证。想强制走 key，就在配置弹窗勾上那个勾选框。
 
+#### ②-B 中兴平台
+
+「📡 电信EPG」→ 平台选 **🟧 中兴平台** →「⚙️ 认证与输出配置」填：
+
+| 字段 | 说明 |
+|---|---|
+| IPTVServer 地址 | 抓包得到的中兴 EPG 服务器，例如 `http://182.137.9.86:8080` |
+| UserID / STBID / StbIP | 机顶盒账号 / 设备号 / 机顶盒 IP |
+| Authenticator | 抓包得到的一长串十六进制；**中兴不能用 key 现场生成**，换账号要重抓 |
+| UserGroupNMB / EPGGroupNMB / LastTermno / stbinfo | 抓包值，一般 `55` / 空 / `0` / `undefined` |
+| live_proxy | 组播转单播地址（udpxy / msd_lite），例如 `http://192.168.100.1:4022`，生成 `…/udp/239.x.x.x:5140` |
+| replay_proxy | 回看地址，填本程序 RTSP 代理，例如 `rtsp://192.168.100.1:554` |
+| 回看天数 | 1–10 天（默认 8 天：前 6 天 + 今天 + 明天，与原始脚本一致） |
+
+保存后：「测试连接」→「执行认证」→「更新频道列表」→「更新EPG信息」。
+**中兴的回看必须经过 RTSP 代理**：在同一个弹窗下半部分勾选「启用回看代理」、填真实 RTSP 服务器
+（抓包得到的 CDN 地址，如 `218.89.44.4:554`）→ 保存即自动启动；也可在页面「🎧 回看代理」一行手动启停。
+
+> 中兴数据全部独立存放：配置 `telecom_zte` 段、频道 `zte_channels.json`、节目单 `data/json/<频道名>_zte_<日期>.json`、
+> 专用 XML `data/xml/epg_zte.xml`、播放列表 `zte.m3u`。切回华为不会覆盖，也不会混用。
+
 ### ③ 配置外部 EPG 源
 「🌐 外部EPG」→「➕ 添加源」，推荐这两个（内容相同、覆盖不同）：
 
@@ -82,7 +110,7 @@ docker compose logs -f
 
 ### ⑤ 生成 XML
 「📊 仪表盘」→「📄 生成XML」（或等定时任务）
-产物：`data/xml/epg.xml`（+`.gz`）、`data/xml/epg_telecom.xml`（仅电信）
+产物：`data/xml/epg.xml`（+`.gz`，全部频道，按当前平台优先取电信节目）、平台专用 `epg_telecom.xml` / `epg_zte.xml`
 播放器 EPG 地址填：`http://<IP>:5673/epg.xml`
 
 ### ⑥ 整理播放列表
@@ -171,13 +199,17 @@ bash build.sh
 
 ```
 <DATA_ROOT>/
-├── json/      # 下载的 JSON 节目数据
-├── xml/       # 生成的 XML：epg.xml(.gz) 全部频道 / epg_telecom.xml(.gz) 仅电信
-├── m3u/       # M3U 播放列表
+├── json/      # 节目数据：外部 EPG <频道名>_<日期>.json
+│              #          华为电信 <频道名>_telecom_<日期>.json
+│              #          中兴电信 <频道名>_zte_<日期>.json
+├── xml/       # epg.xml(.gz) 全部频道 / epg_telecom.xml(.gz) 华为 / epg_zte.xml(.gz) 中兴
+├── m3u/       # M3U 播放列表：telecom.m3u（华为）/ zte.m3u（中兴）
+│              # sctv.txt / sctv.m3u 是「当前平台」别名，切换平台后按新平台重建
 ├── icons/     # 台标
 ├── logs/      # 运行日志（保留 7 天）
 ├── tools/     # 外部工具：仪表盘「电脑播放」下载的 IPTV.exe 放这里（换版本不用重建镜像）
-├── config/    # app_config.json（唯一配置文件）+ 频道/认证等其它数据
+├── config/    # app_config.json（唯一配置文件）
+│              # telecom_channels.json（华为频道）/ zte_channels.json（中兴频道）等
 └── share/     # 共享目录（设置项 share_xml_path，默认 /app/data/share）
 ```
 
@@ -188,7 +220,20 @@ bash build.sh
 ```json
 {
   "config_version": 2,
-  "telecom": { "enabled": true, "AuthenticationIP": "...", "UserID": "...", "mac": "...", "Authenticator": "...", "RTP2HTTPD": "..." },
+  "telecom": {
+    "platform": "huawei",            // ★ 当前生效的电信平台：huawei / zte
+    "enabled": true, "AuthenticationIP": "...", "UserID": "...", "mac": "...",
+    "Authenticator": "...", "RTP2HTTPD": "..."
+  },
+  "telecom_zte": {
+    "enabled": false,
+    "server": "http://182.137.9.86:8080",
+    "UserID": "...", "STBID": "...", "StbIP": "...", "Authenticator": "...",
+    "live_proxy": "http://192.168.100.1:4022",
+    "replay_proxy": "rtsp://192.168.100.1:554",
+    "rtsp_proxy_enabled": false, "rtsp_proxy_port": 554,
+    "rtsp_upstream": "", "rtsp_upstream_port": 554
+  },
   "cron_time": "11:00",              // 外部 EPG 定时
   "cron_enabled": true,
   "telecom_channels_cron_enabled": false,
@@ -204,16 +249,20 @@ bash build.sh
 }
 ```
 
-- **电信认证 / 取频道 / 下载 EPG 一律读这个文件**，不再使用请求里的临时参数；页面的「⚙️ 电信认证与EPG配置」只负责编辑保存
+- **`telecom.platform` 决定当前用哪家的数据**：`huawei` 或 `zte`。
+  - 页面上切换平台走 `POST /api/telecom/platform`，当前平台已配置过/有频道缓存时会先返回警告，必须 `confirm=true` 才真正切换
+  - 两家的配置、频道缓存、EPG JSON、专用 XML、m3u 全部各自独立，切换不会删数据，也不会互相覆盖
+  - 切换后会在后台按新平台重建 `sctv.txt / sctv.m3u / epg.xml / epg_<平台>.xml`；新平台没有频道时，两个 sctv 别名文件会被清掉，避免对外继续提供上一个平台的频道
+- **`telecom.enabled` / `telecom_zte.enabled` 只是定时任务开关**：只有 `scheduler` 里的「定时刷新频道 / 定时下载 EPG」会检查对应平台的 `enabled`；页面上的「执行认证 / 获取频道 / 下载EPG」等手动按钮**从不读这个字段**
+- **电信认证 / 取频道 / 下载 EPG 一律读这个文件**，不再使用请求里的临时参数；页面的「⚙️ 认证与输出配置」只负责编辑保存（华为、中兴各一个弹窗，各写各的段）
 - **`epg_server_url` / `logo_url` 留空＝自动用当前访问地址**：打开面板用的什么域名/IP，就生成什么链接
   - EPG 直链 = `<地址>/<epgname>`（`epgname` 默认 `epg.xml`，即「生成XML」合并后输出的那份，路由 `GET /epg.xml` 免登录）
   - 台标 = `<地址>/api/download/<频道名>.png`（与「频道管理」里选台标得到的链接同一种写法）；若 `logo_url` 填的是**外部台标服务器**（与本站不同源），则沿用 `<logo_url>/logo/<频道名>.png`。两种路径都免登录、都从 `data/icons` 取图（外部服务器除外），没有图片返回 404
   - 取频道 / 生成 m3u 时会把补齐后的地址写回 `app_config.json`，定时任务也用同一套链接；`127.0.0.1` / `localhost` 不会写回
-  - **`RTP2HTTPD` 始终手工填**（组播转单播服务地址，无法自动推断）
+  - **`RTP2HTTPD` 始终手工填**（华为平台的组播转单播服务地址，无法自动推断）；中兴平台对应的是 `live_proxy`
 - **外部 EPG 源只存在于这个文件**：脚本里没有任何内置默认源，全新安装时 `epg_sources` 是空数组
   - 可以在页面「➕ 添加源」里加，也可以直接编辑 JSON 的 `epg_sources`（改完刷新即生效）
   - 上面示例里的两个地址可直接抄用（`epg.51zmt.top:8000` 官方域名很多网络超时，这里用的是同内容镜像）
-- **`telecom.enabled` 只是定时任务开关**：只有 `scheduler` 里的「定时刷新电信频道 / 定时下载电信EPG」会检查它；页面上的「执行认证 / 获取频道 / 下载EPG」等手动按钮**从不读这个字段**。所以状态条显示「定时任务未启用」时，手动操作一切照常
 - 首次启动会把旧的 `settings.json` + `epg_sources.json` 自动合并进来，旧文件改名为 `.json.bak` 保留
 - 只保存部分设置（比如切一下 gzip 开关）不会冲掉其它配置
 
@@ -250,23 +299,37 @@ mv /volume2/docker/IPTV/data /volume2/docker/IPTV/config
 |---|---|
 | `app/main.py` | 页面 + 频道 / EPG / M3U / 台标 / 共享目录 / 日志 / 设置 / 频道总览 |
 | `app/auth.py` | 登录、改账号密码、Token 鉴权 |
-| `app/telecom_api.py` | 电信 IPTV 接口层（配置 / 认证 / 频道 / EPG / 日志） |
-| `app/telecom_epg.py` | 电信抓取核心：认证（`crypt_1` 加密 Authenticator）、频道、EPG、M3U 生成 |
+| `app/telecom_platform.py` | **平台选择**：当前平台状态、切换（带警告确认）、切换后重建输出 |
+| `app/telecom_api.py` | **华为**接口层（配置 / 认证 / 频道 / EPG / 日志）；频道缓存接口按当前平台读写 |
+| `app/telecom_epg.py` | **华为**抓取核心：认证（`crypt_1` 加密 Authenticator）、频道、EPG、M3U 生成 |
+| `app/zte_api.py` | **中兴**接口层（`/api/zte/*`：配置 / 认证 / 频道 / EPG / 代理控制 / 日志） |
+| `app/zte_epg.py` | **中兴**抓取核心：三步认证、frameset 频道解析、`getTvodlist` 节目单、地址翻译、输出生成 |
+| `app/rtsp_proxy.py` | 中兴回看 **RTSP 代理**（跟随 302、PLTV↔live / smil↔sdp 翻译、地址改写、可启停） |
+| `app/channel_groups.py` | 频道分组推断（华为 / 中兴共用） |
 | `app/downloader.py` | 下载引擎：频道 JSON、外部 EPG 源、过期清理 |
 | `app/epg_parser.py` | 外部 EPG 解析（112114 / 51zmt 两种规则） |
-| `app/xml_builder.py` | 生成 XMLTV：`build_xml`（主 XML，电信优先合并）+ `build_telecom_xml`（仅电信） |
+| `app/xml_builder.py` | 生成 XMLTV：`build_xml`（主 XML，按当前平台优先合并）+ `build_telecom_xml`（平台专用） |
 | `app/m3u_handler.py` | M3U 解析 / 重建 / 合并（去重、RTP、FCC、分组、保序） |
-| `app/scheduler.py` | 定时任务：每日 EPG、电信频道、电信 EPG |
-| `app/config.py` | 配置读写（`app_config.json` 统一配置、原子写、文件名清洗、保留策略） |
-| `app/logger.py` | 按天分文件、按分类的日志 |
+| `app/scheduler.py` | 定时任务：每日 EPG、电信频道 / EPG（按当前平台分发到华为或中兴） |
+| `app/config.py` | 配置读写（`app_config.json` 统一配置、平台/频道的文件映射、原子写、文件名清洗） |
+| `app/logger.py` | 按天分文件、按分类的日志（支持多个实时订阅者：华为 / 中兴面板） |
 | `app/progress.py` | 下载进度（普通任务与电信任务共用） |
-| `app/crypt_1.py` | 3DES/DES 加解密（电信 `EncryptToken` / Authenticator） |
+| `app/crypt_1.py` | 3DES/DES 加解密（华为 `EncryptToken` / Authenticator） |
+
+前端对应文件：
+
+| 文件 | 职责 |
+|---|---|
+| `static/js/telecomepg.js` | 华为配置弹窗 + 操作按钮；**按当前平台把按钮分发给中兴脚本** |
+| `static/js/zteepg.js` | 中兴配置弹窗、认证/频道/EPG 操作、回看代理控制 |
+| `static/js/telecomplatform.js` | 平台选择器、切换警告弹窗、平台状态展示 |
+| `static/js/app.js` | 其余页面（仪表盘 / EPG / M3U / 总览 / 日志…） |
 
 ---
 
 ## ✨ 功能
 
-界面共 **9 个页签**，对应后端 **84 个路由 / 88 个接口方法**。
+界面共 **10 个页签**，对应后端 **105 个接口路径 / 133 个接口方法**。
 
 **📊 仪表盘**
 - 系统概览：频道总数、JSON 文件数、台标总数、XML 大小
@@ -278,16 +341,23 @@ mv /volume2/docker/IPTV/data /volume2/docker/IPTV/config
 - 旧的「开始下载 / 下载过往」按钮已隐藏（当前流程以电信任务 + 外部 EPG 提取为主）
 
 **📡 电信 EPG**
-- 机顶盒参数配置（UserID / mac / STBID / key / Authenticator / areaId / STBType …）
-- 配置只写 `app_config.json`；**认证 / 取频道 / 下载 EPG 全部读该文件**，页面参数不参与
-- 测试连接、执行认证（华为 IPTV 认证流程 + 3DES 解 `EncryptToken`，`crypt_1.py`）
-- 获取频道列表（组播地址、RTSP、fcc/fec 参数）并缓存
-- 拉完频道后**自动并入「EPG 管理」**（设置项 `telecom_auto_add_to_epg`，默认开），电信节目因此能进入主 `epg.xml`
-- 单频道 / 全部频道下载 EPG，后台异步 + 进度
-- 抓频道 / 下载 EPG 的进度**实时滚在页面底部「执行日志」**里（不占顶部进度条），底层认证与逐频道明细也会显示
-- 「⏰ 定时任务」：频道刷新 / EPG 下载 各自开关与时间
-- 生成 `telecom.m3u`，以及 `sctv.txt` / `sctv.m3u`（含回看地址）
-- 自动生成电信专用 XML：`data/xml/epg_telecom.xml` + `.gz`（与 `epg.xml` 同目录）
+- **平台选择：🟦 华为平台 / 🟧 中兴平台**（四川各地市平台不同）
+  - 顶部常驻平台状态：当前平台、是否已配置、频道缓存数量、输出文件名
+  - **切换平台会弹窗警告**：当前平台已配置过 / 有频道缓存时，必须明确确认才切换；警告里会说明切换后哪些数据会变、哪些保留
+  - 切换后自动按新平台重建 `sctv.txt / sctv.m3u / epg.xml / epg_<平台>.xml`（后台执行）
+  - 两个平台「执行认证 / 获取频道 / 下载EPG / 生成M3U」互斥：当前平台不是它时，直接调用另一个平台的写接口会被拒绝（409）
+- 华为平台：机顶盒参数配置（UserID / mac / STBID / key / Authenticator / areaId / STBType …）
+- 中兴平台：IPTVServer / UserID / STBID / StbIP / Authenticator / UserGroupNMB / EPGGroupNMB 等参数
+- 配置只写 `app_config.json`（华为写 `telecom`、中兴写 `telecom_zte`）；**认证 / 取频道 / 下载 EPG 全部读该文件**，页面参数不参与
+- 测试连接、执行认证（华为：IPTV 认证 + 3DES 解 `EncryptToken`；中兴：`auth.jsp → index.jsp → funcportalauth.jsp` 三步）
+- 获取频道列表（华为：组播地址、RTSP、fcc/fec；中兴：`frameset_builder.jsp` 解析 channelcode/组播/RTSP）并缓存
+- 拉完频道后**自动并入「EPG 管理」**（设置项 `telecom_auto_add_to_epg`，默认开），电信节目因此能进入主 `epg.xml`（备注里标「电信源 / 中兴源」）
+- 单频道 / 全部频道下载 EPG，后台异步 + 进度（中兴默认 8 天：前 6 天 + 今天 + 明天）
+- 抓频道 / 下载 EPG 的进度**实时滚在页面底部「执行日志」**里（不占顶部进度条）；两个平台各有一份日志缓冲，切平台后日志跟着切换
+- 「⏰ 定时任务」：频道刷新 / EPG 下载 各自开关与时间；任务运行时按**当前平台**分发，不会把两个平台混着跑
+- 生成 `telecom.m3u`（华为）/ `zte.m3u`（中兴），以及 `sctv.txt` / `sctv.m3u`（当前平台，含回看地址）
+- 自动生成平台专用 XML：`data/xml/epg_telecom.xml`（华为）/ `data/xml/epg_zte.xml`（中兴）+ `.gz`
+- **中兴回看 RTSP 代理**：页面可直接启停，自动跟随服务器 302 重定向、把 `PLTV/smil + playseek` 翻译成服务器要的 `live/mpg + programbegin/programend`，并把响应里的地址改回本代理，播放器不用直连内网 CDN
 
 **🌐 外部 EPG**
 - 源管理：**源列表完全由配置文件决定**（`app_config.json` 的 `epg_sources`），脚本不内置默认源；全新安装时为空，在页面「➕ 添加源」或直接编辑 JSON 即可
@@ -324,7 +394,7 @@ mv /volume2/docker/IPTV/data /volume2/docker/IPTV/config
 - 手动给频道选节目单：下拉选项来自**合并后的 `epg.xml`**（电信 + 外部 EPG 的实际输出），电信里没有的频道也能匹配
 
 **📇 频道总览**
-- 来源切换：**电信频道**（看直播/回看地址）或任意 **M3U / TXT 文件**（含合并结果）
+- 来源切换：**当前电信平台频道**（看直播/回看地址，华为 / 中兴按平台生成）或任意 **M3U / TXT 文件**（含合并结果）
 - 表格显示：频道、**TVG-NAME**、**台标 URL**、直播地址、回看地址（`catchup-source` / RTSP+playseek）、时移、FCC/FEC、tvg-id、分组
 - 支持搜索、「只看有回看」筛选、单条复制直播/回看/台标地址、导出 CSV
 
@@ -358,6 +428,24 @@ bash build.sh                                       # 重新构建 + 启动
 | 前端缓存 | 静态资源已带版本号，刷新页面即生效 |
 | 外部 EPG 源 | 不再内置默认值；沿用你原来的源，没有则去「外部EPG → ➕ 添加源」补 |
 | 依赖 | 已移除 `beautifulsoup4 / lxml / soupsieve`，首次升级建议 `docker compose build --no-cache` |
+
+---
+
+## 🔧 2026-10 双平台合并（华为 + 中兴）
+
+把原始备份里的中兴脚本（`iptv.py` / `rtspproxy.py`）合并进本项目，与原有华为实现并列：
+
+| 类别 | 变更 |
+|---|---|
+| 平台 | `app_config.json` 新增 `telecom.platform`（`huawei` / `zte`）与独立 `telecom_zte` 段 |
+| 中兴抓取 | 新增 `app/zte_epg.py`：三步认证、`frameset_builder.jsp` 频道解析、`getTvodlist.jsp` 节目单、地址翻译、JSON/M3U 输出、整任务编排 |
+| 中兴接口 | 新增 `app/zte_api.py`（`/api/zte/*`），配置白名单、日志流、后台任务、代理控制 |
+| 回看代理 | 新增 `app/rtsp_proxy.py`：原始 `rtspproxy.py` 整理为可启停服务，修了请求头截断、端口 0、RTP 交织数据误读等问题 |
+| 平台选择 | 新增 `app/telecom_platform.py` + `static/js/telecomplatform.js`：切换前警告确认、切换后重建输出 |
+| 数据隔离 | 频道缓存 `zte_channels.json`、EPG 后缀 `_zte`、XML `epg_zte.xml`、M3U `zte.m3u`；与华为互不覆盖 |
+| 定时任务 | `scheduler.py` 按当前平台分发：中兴任务复用 `run_zte_job`，平台切走后自动跳过 XML 重建 |
+| 前端 | 新增 `static/js/zteepg.js`；`telecomepg.js` 按平台分发按钮；频道列表 / 状态条 / 总览都显示当前平台 |
+| 部署 | Dockerfile `EXPOSE 80 554`；compose 提供（默认注释的）`RTSP_PROXY_PORT:554` 映射和 `.env` 说明 |
 
 ---
 
@@ -455,12 +543,14 @@ bash build.sh                                       # 重新构建 + 启动
 ## ⚠️ 注意事项
 
 1. **换行符**：Dockerfile / *.sh 必须是 LF，Windows 下用记事本改过会启动失败（`build.sh` 会自动修一遍）。
-2. **端口**：容器内 80，宿主机默认 5673；改 `WEB_PORT` 即可。
+2. **端口**：容器内 80，宿主机默认 5673；改 `WEB_PORT` 即可。中兴回看代理默认容器内 554，compose 里对应的映射**默认注释**（避免宿主机 554 被占用拖垮容器启动），用中兴回看时取消注释即可；宿主机端口由 `RTSP_PROXY_PORT` 决定。
 3. **首次启动**：所有频道列表都是空的，外部 EPG 源也是**空的**（脚本不内置默认源），需要去「外部EPG → ➕ 添加源」自己加；频道来自「电信EPG」或「外部EPG」。
 4. **上传上限**：共享目录 200MB、M3U 50MB、台标 20MB、频道导入 10MB；nginx 层统一 300m（前端 base64 编码会放大约 1.33 倍）。
 5. **文件属主**：容器以 root 运行，数据文件属主是 `root`；群晖 File Station 里用管理员账号可正常读写。
-6. **定时任务**：外部 EPG 默认每天 11:00（仪表盘 →「⏰ 外部 EPG 定时任务」修改）；电信频道/EPG 定时在「电信EPG → ⏰ 定时任务」。都写入 `app_config.json`，保存即生效；时区由 `TZ` 决定。
+6. **定时任务**：外部 EPG 默认每天 11:00（仪表盘 →「⏰ 外部 EPG 定时任务」修改）；电信频道/EPG 定时在「电信EPG → ⏰ 定时任务」。都写入 `app_config.json`，保存即生效；时区由 `TZ` 决定。定时任务按**当前平台**执行，只检查对应平台配置里的 `enabled`。
 7. **电信频道会自动补回**：`telecom_auto_add_to_epg` 开启时，在「EPG 管理」里删掉的电信频道，下次拉频道会再加回来；不想这样就把该设置改成 `false`。
+8. **平台别选错**：四川各地市平台不同。如果认证一直失败、频道列表为空或节目单全对不上，先确认顶部选的平台是否和当地一致；切换平台会有警告弹窗，确认后再重新认证、取频道。
+9. **中兴回看代理**：默认关闭。启用后需要宿主机放行/映射 554（或页面里改的端口），并且 `replay_proxy` 要填**运行本程序的机器**的内网 IP（不是 127.0.0.1，否则手机/电视上的播放器连不上）。
 
 ---
 
@@ -488,9 +578,53 @@ bash build.sh                                       # 重新构建 + 启动
 
 注意：
 
-- 合并是**按天整份替换**，不是逐条节目拼接：某天有 `_telecom` 文件就整天用电信，没有才用外部。
+- 合并是**按天整份替换**，不是逐条节目拼接：某天有 `_telecom`（或 `_zte`）文件就整天用电信，没有才用外部。
 - 合并后的提取记录不会在「EPG 管理」里再建一条频道（避免重复）。
 - 想解除合并：编辑该提取记录，把「并入目标」改回「独立频道」。
+
+---
+
+## 🏙 四川各地市：华为 / 中兴两个电信平台
+
+四川各地市的电信 IPTV 平台并不统一，同一套参数换到别的城市大概率认证失败或频道对不上。
+所以本版本把两个平台做成**并列、互不干扰**的两套实现：
+
+| 项目 | 华为平台 | 中兴平台 |
+|---|---|---|
+| 前端脚本 | `static/js/telecomepg.js` | `static/js/zteepg.js` |
+| 后端接口 | `/api/telecom/*`（`telecom_api.py`） | `/api/zte/*`（`zte_api.py`） |
+| 抓取核心 | `app/telecom_epg.py` | `app/zte_epg.py` |
+| 配置段（`app_config.json`） | `telecom` | `telecom_zte` |
+| 频道缓存 | `data/config/telecom_channels.json` | `data/config/zte_channels.json` |
+| 节目单 JSON | `<频道名>_telecom_<日期>.json` | `<频道名>_zte_<日期>.json` |
+| 平台专用 XML | `data/xml/epg_telecom.xml` | `data/xml/epg_zte.xml` |
+| M3U | `data/m3u/telecom.m3u` | `data/m3u/zte.m3u` |
+| 定时任务 | 共用「电信频道 / 电信EPG」两个时间点，运行时按当前平台分发 | 同左 |
+
+### 切换规则（重点）
+
+1. 打开「📡 电信EPG」，顶部按钮显示当前平台（高亮）和两家各自的状态。
+2. 点另一个平台时：
+   - 如果当前平台**没配置过、也没有频道缓存** → 直接切换；
+   - 否则先弹窗列出警告：当前平台是什么、已有多少频道、切换后哪些数据会改变、哪些会保留；
+   - 只有点「我已确认，切换」才会真正执行（`POST /api/telecom/platform` 带 `confirm=true`）。
+3. 切换后：`sctv.txt / sctv.m3u` 会用新平台的频道缓存重建；`epg.xml` 只读取新平台的 `<平台后缀>` JSON；
+   另一个平台的配置文件、频道缓存、JSON、专用 XML、m3u **原样保留**，切回去继续用。
+4. 已并入「EPG 管理」的频道不会因切换而删除；如果某频道只存在于旧平台，主 `epg.xml` 里它会暂时没有节目数据，
+   需要的话在「EPG 管理」里手动清理或重新获取新平台的频道。
+
+> 想换城市/换账号前，建议先切换平台再改参数，避免把新城市的账号填进旧平台的配置里。
+
+### 中兴回看为什么要代理
+
+中兴的回看地址形如 `rtsp://<CDN>/PLTV/xxx.smil?playseek=...`，服务器会先回 302 把播放器指到边缘节点，
+并且只认 `live/.../mpg + programbegin/programend` 这种形式。普通播放器直接播会失败，所以：
+
+- `app/rtsp_proxy.py` 监听一个本地端口（默认 554），接收播放器请求 → 按规则翻译 → 转发真实服务器 → 跟随 302 → 把响应里的地址改回代理
+- 页面「中兴平台」弹窗里勾「启用回看代理」并填真实 RTSP 服务器后，保存即自动启动；服务重启也会自动拉起
+- `replay_proxy` 填 `rtsp://<运行本程序的机器内网IP>:554`，生成的回看地址就会走代理
+- 端口占用或权限不足时，弹窗/状态行会显示具体错误；Docker 需要把 554 映射出来（compose 里那行默认是注释的，用的时候取消注释）
+- ⚠️ 代理本身**不做鉴权**（播放器无法方便地带账号），只应在内网使用，不要把 554 直接映射到公网
 
 ---
 
@@ -514,6 +648,11 @@ bash build.sh                                       # 重新构建 + 启动
 | 电信任务一点整个页面卡住 | 旧版本会把事件循环占满；现已改为线程池执行。若仍卡，检查是否还在跑旧镜像 |
 | 合并后频道顺序被打乱 | 「合并文件」里勾选**保持第一个文件顺序**，并把电信文件排第一个 |
 | 配置改了没生效 | 看 `data/config/app_config.json` 是否被写入（页面保存后会立即生效，不需要重启） |
+| 华为/中兴认证一直失败 | 先确认顶部平台选对（四川各地市不同）；中兴要填抓包得到的 `Authenticator` 和 `IPTVServer`，不能用华为的 key 方式生成 |
+| 中兴「获取频道列表」为空 | 多半是认证失效或页面结构变了：先「执行认证」看结果；可设置环境变量 `ZTE_DEBUG_DUMP=1` 把原始 `frameset_builder.jsp` 存到 `data/logs/` 排查 |
+| 中兴回看播不出来 | 检查「🎧 回看代理」是否运行、`replay_proxy` 是否填了本机内网 IP、`rtsp_upstream` 是否填了抓包到的真实 RTSP 服务器；代理日志会写「已改连边缘节点 / 连接失败」 |
+| 回看代理启动失败「端口被占用或权限不足」 | 宿主机 554 被占用时改 `.env` 的 `RTSP_PROXY_PORT`，或在页面里把监听端口改成别的（同时改 compose 映射 / `replay_proxy`） |
+| 切换平台后 sctv 还是旧平台地址 | 切换后重建是后台任务，稍等几秒看执行日志；新平台没有频道缓存时会清空 sctv 别名，需要先「更新频道列表」 |
 
 ---
 
@@ -532,9 +671,12 @@ bash build.sh                                       # 重新构建 + 启动
 | `GET /api/m3u/{文件}` | M3U 内容（JSON，供编辑用） | 需登录 |
 | `GET /api/overview?source=…` | 频道总览（`telecom` 或 `m3u:文件名`） | 需登录 |
 | `GET /api/download/{文件}` | **统一下载入口**（见下节，唯一的文件下载地址） | m3u/图标/xml 公开，share 需登录 |
-| `/api/telecom/*` | 电信认证、频道、EPG、M3U | 需登录 |
+| `/api/telecom/platform` | **平台选择**：GET 读当前平台 / POST 切换（需 `confirm`） | 需登录 |
+| `/api/telecom/status` | 当前平台状态（已配置 / 缺什么 / 频道缓存数） | 需登录 |
+| `/api/telecom/*` | **华为**认证、频道、EPG、M3U、日志、反推 key | 需登录 |
+| `/api/zte/*` | **中兴**配置、认证、频道、EPG、M3U、代理启停、日志 | 需登录 |
 
-> 完整接口以 `app/main.py`、`app/auth.py`、`app/telecom_api.py` 中的路由定义为准（共 84 个）。
+> 完整接口以 `app/main.py`、`app/auth.py`、`app/telecom_api.py`、`app/telecom_platform.py`、`app/zte_api.py` 中的路由定义为准（105 个路径 / 133 个方法）。
 
 ---
 
@@ -544,10 +686,13 @@ bash build.sh                                       # 重新构建 + 启动
 
 | 地址 | 实际文件 | 认证 |
 |---|---|---|
-| `/api/download/telecom.m3u` | `data/m3u/telecom.m3u`（`.m3u` `.m3u8` `.txt`） | 公开 |
+| `/api/download/telecom.m3u` | `data/m3u/telecom.m3u`（华为，`.m3u` `.m3u8` `.txt`） | 公开 |
+| `/api/download/zte.m3u` | `data/m3u/zte.m3u`（中兴） | 公开 |
+| `/api/download/sctv.m3u` · `sctv.txt` | `data/m3u/sctv.*`（**当前平台**生成的别名，切换平台后会被重建） | 公开 |
 | `/api/download/CCTV1.png` | `data/icons/CCTV1.png`（png/jpg/jpeg/gif/svg/webp/ico） | 公开 |
 | `/api/download/epg.xml` · `/api/download/epg.xml.gz` | `data/xml/epg.xml(.gz)` | 公开 |
-| `/api/download/epg_telecom.xml` · `.gz` | `data/xml/epg_telecom.xml(.gz)`（仅电信） | 公开 |
+| `/api/download/epg_telecom.xml` · `.gz` | `data/xml/epg_telecom.xml(.gz)`（华为平台专用） | 公开 |
+| `/api/download/epg_zte.xml` · `.gz` | `data/xml/epg_zte.xml(.gz)`（中兴平台专用） | 公开 |
 | `/api/download/share/子目录/文件` | 共享目录里的任意文件 | **需登录** |
 
 补充用法：

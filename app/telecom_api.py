@@ -33,7 +33,6 @@ from .telecom_epg import (
     telecom_generate_m3u,
     telecom_sync_to_server,
     generate_sctv_files,
-    _auth_config_error,
 )
 
 router = APIRouter(prefix="/api/telecom", tags=["电信EPG"])
@@ -115,13 +114,12 @@ def _telecom_log_sink(message: str) -> None:
         _sink_busy = False
 
 
-logger.set_extra_sink(_telecom_log_sink)
-
-# 频道对象允许的字段（telecom_epg 生成的字段集）
+logger.add_extra_sink(_telecom_log_sink)
+# 频道对象允许的字段（telecom_epg / zte_epg 生成的字段集，两个平台共用）
 _CHANNEL_KEEP_KEYS = {
     "channel_id", "name", "user_channel_id", "channel_url", "timeshift",
     "timeshift_length", "rtsp_url", "fcc_enable", "fcc_ip", "fcc_port", "fec_port",
-    "_manual", "_disabled", "tvg_id",  # ★ 新增这两个标记 ★ 新增 "tvg_id"
+    "_manual", "_disabled", "tvg_id", "channel_no",  # ★ 新增这两个标记 ★ 新增 "tvg_id"
 }
 
 # schedule 时间格式：HH:MM
@@ -139,6 +137,17 @@ def _get_effective_config(data: Any) -> dict:
     避免请求体里的临时参数和落盘配置不一致。
     """
     return get_telecom_config()
+
+
+def _require_active_platform() -> str:
+    """华为的写操作必须在「华为平台」生效时执行，防止切错平台写乱数据。"""
+    platform = config.get_active_platform()
+    if platform != "huawei":
+        raise HTTPException(
+            409,
+            f"当前生效平台是「{config.platform_label(platform)}」，"
+            f"请先在「电信EPG」页切换到「华为平台」再操作")
+    return platform
 
 
 def _request_base_url(request: Any) -> str:
@@ -526,6 +535,7 @@ async def get_channels_api(request: Request, data: dict = Body(...)):
     generate_sctv_files，必 NameError。现统一用 config_data。
     ★ EPG / 台标地址留空时用当前访问地址补齐（并写回配置，供定时任务复用）。
     """
+    _require_active_platform()
     config_data = _fill_output_urls(_get_effective_config(data), request, persist=True)
 
     _telecom_begin()
@@ -559,11 +569,14 @@ async def get_channels_api(request: Request, data: dict = Body(...)):
 
 @router.get("/cached-channels")
 async def get_cached_channels():
-    """返回本地缓存的频道列表。"""
-    c = config.get_telecom_channels()
+    """返回当前生效平台的频道缓存（华为 telecom_channels.json / 中兴 zte_channels.json）。"""
+    platform = config.get_active_platform()
+    c = config.get_platform_channels(platform)
     channels = c.get("channels", [])
-    cfg = get_telecom_config()
+    cfg = config.get_platform_config(platform)
     return {
+        "platform": platform,
+        "platform_label": config.platform_label(platform),
         "channels": channels,
         "updated": c.get("updated", ""),
         "count": len(channels),
@@ -572,7 +585,8 @@ async def get_cached_channels():
 
 @router.put("/cached-channels")
 async def save_cached_channels_api(data: dict = Body(...)):
-    """手工编辑频道缓存：保存前端传过来的频道列表，并自动打上 _manual 标记。"""
+    """手工编辑频道缓存（写回当前生效平台），并重建该平台的 sctv / XML。"""
+    platform = config.get_active_platform()
     raw = data.get("channels")
     if not isinstance(raw, list):
         raise HTTPException(400, "channels 必须是数组")
@@ -618,24 +632,34 @@ async def save_cached_channels_api(data: dict = Body(...)):
     if not cleaned:
         return {"success": False, "message": "至少保留一个频道"}
 
-    if not config.save_telecom_channels(cleaned):
+    if not config.save_platform_channels(platform, cleaned):
         return {"success": False, "message": "写入缓存失败"}
 
-    # ★ 新增：保存开关
+    # ★ 新增：保存开关（写到当前平台的配置段）
     if "enable_group" in data:
-        cfg = get_telecom_config()
+        cfg = config.get_platform_config(platform)
         cfg["enable_group"] = bool(data["enable_group"])
-        save_telecom_config(cfg)
+        if platform == "huawei":
+            save_telecom_config(cfg)
+        else:
+            from . import zte_epg
+            zte_epg.save_zte_config(cfg)
 
-    # 自动重生成 sctv 和 XML
+    # 自动重生成 sctv 和 XML（按当前平台）
     try:
-        cfg = _fill_output_urls(get_telecom_config(), None, persist=False)
-        generate_sctv_files(cleaned, cfg)
-        xml_builder.build_telecom_xml()
+        if platform == "huawei":
+            cfg = _fill_output_urls(config.get_platform_config("huawei"), None, persist=False)
+            generate_sctv_files(cleaned, cfg)
+        else:
+            from . import zte_epg
+            cfg = config.get_platform_config("zte")
+            zte_epg.zte_generate_sctv_files(cleaned, cfg)
+        xml_builder.build_telecom_xml(platform=platform)
     except Exception as e:
         logger.warning(f"[电信] 保存频道后重新生成文件失败: {e}")
 
-    return {"success": True, "message": f"已保存 {len(cleaned)} 个频道", "count": len(cleaned)}
+    return {"success": True, "message": f"已保存 {len(cleaned)} 个频道",
+            "count": len(cleaned), "platform": platform}
 
 # ════════════════════════════════════════════════════════════════
 # EPG 下载
@@ -644,6 +668,7 @@ async def save_cached_channels_api(data: dict = Body(...)):
 @router.post("/download-epg")
 async def download_epg_api(data: dict = Body(...)):
     """下载单个频道的 EPG。"""
+    _require_active_platform()
     config_data = _get_effective_config(data)
     channel_id = _sanitize_channel_arg(data.get("channel_id", ""))
     channel_name = _sanitize_channel_arg(data.get("channel_name", ""))
@@ -677,6 +702,7 @@ async def download_epg_api(data: dict = Body(...)):
 async def download_all_epg_api(request: Request, data: dict = Body(...)):
     """启动后台任务：拉取所有频道 EPG → 同步 JSON → 重建 XML。"""
     global _telecom_running
+    _require_active_platform()
     if _telecom_running:
         return {"success": False, "message": "已有电信任务在运行，请稍候"}
     if download_progress._running:
@@ -777,25 +803,36 @@ async def _run_telecom_epg_task(cfg: dict, days: int, force: bool, auto_fetch: b
         telecom_log(f"3. 同步 JSON + 生成 sctv（成功 {ok} / 失败 {fail}）...")
         try:
             await asyncio.to_thread(telecom_sync_to_server, all_epg, cfg)
-            await asyncio.to_thread(generate_sctv_files, channels, cfg)
-            telecom_log("✅ _telecom JSON / sctv 已写入")
+            if config.get_active_platform() == "huawei":
+                await asyncio.to_thread(generate_sctv_files, channels, cfg)
+                telecom_log("✅ _telecom JSON / sctv 已写入")
+            else:
+                telecom_log("⚠️ 平台已切换到其它平台，跳过 sctv 生成（JSON 仍按华为后缀保存）")
         except Exception as e:
             telecom_log(f"⚠️ 同步/生成失败: {e}")
+
+        # 平台被切走时不要再重建 XML，避免把华为数据写进当前（中兴）的输出
+        if config.get_active_platform() != "huawei":
+            telecom_log("⚠️ 平台已切换到其它平台，跳过 XML 重建")
+            telecom_log(f"===== 任务结束: 成功 {ok} / 失败 {fail} =====")
+            return
 
         # ── 4. 重建主 XML ──
         telecom_log("4. 正在重建 epg.xml ...")
         try:
             await asyncio.to_thread(xml_builder.build_xml,
-                                    log_callback=lambda m: telecom_log(m))
+                                    log_callback=lambda m: telecom_log(m),
+                                    platform="huawei")
             telecom_log("✅ epg.xml 重建完成")
         except Exception as e:
             telecom_log(f"❌ epg.xml 生成失败: {e}")
 
-        # ── 5. 电信专用 XML ──
-        telecom_log("5. 正在生成电信专用 XML (epg_telecom.xml) ...")
+        # ── 5. 华为专用 XML ──
+        telecom_log("5. 正在生成华为专用 XML (epg_telecom.xml) ...")
         try:
             tr = await asyncio.to_thread(xml_builder.build_telecom_xml,
-                                         log_callback=lambda m: telecom_log(m))
+                                         log_callback=lambda m: telecom_log(m),
+                                         platform="huawei")
             if tr.get("success"):
                 telecom_log(
                     f"✅ epg_telecom.xml: {tr['channel_count']} 频道 / {tr['programme_count']} 节目"
@@ -803,7 +840,7 @@ async def _run_telecom_epg_task(cfg: dict, days: int, force: bool, auto_fetch: b
             else:
                 telecom_log(f"⚠️ epg_telecom.xml 跳过: {tr.get('error', '')}")
         except Exception as e:
-            telecom_log(f"⚠️ 电信 XML 生成失败: {e}")
+            telecom_log(f"⚠️ 华为 XML 生成失败: {e}")
 
         telecom_log(f"===== 全部完成: 成功 {ok} / 失败 {fail} =====")
 
@@ -829,6 +866,7 @@ async def _run_telecom_epg_task(cfg: dict, days: int, force: bool, auto_fetch: b
 @router.post("/generate-m3u")
 async def generate_m3u_api(request: Request, data: dict = Body(...)):
     """根据 channels + 输出配置生成 telecom.m3u。"""
+    _require_active_platform()
     # 与 /config 一致：缺失 config 时读取已保存配置
     config_data = _fill_output_urls(_get_effective_config(data), request, persist=True)
     channels = _sanitize_channels(data.get("channels", []))
@@ -848,28 +886,6 @@ async def generate_m3u_api(request: Request, data: dict = Body(...)):
         "success": True,
         "content": m3u_content,
         "saved_to": str(m3u_path),
-    }
-
-
-# ════════════════════════════════════════════════════════════════
-# 状态
-# ════════════════════════════════════════════════════════════════
-
-@router.get("/status")
-async def telecom_status_api():
-    """电信模块状态摘要（供仪表盘/前端快捷入口用）。
-
-    - configured：UserID / mac / STBID 是否齐全
-    - config_error：认证前置校验的结论（缺字段 / 缺 key 或 Authenticator），空串＝可以认证
-    - enabled：只影响**定时任务**（频道刷新 / EPG 下载），手动按钮不受影响
-    """
-    telecom_config = get_telecom_config()
-    return {
-        "enabled": bool(telecom_config.get("enabled", False)),
-        "configured": bool(telecom_config.get("UserID") and telecom_config.get("mac")
-                           and telecom_config.get("STBID")),
-        "config_error": _auth_config_error(telecom_config),
-        "AuthenticationIP": telecom_config.get("AuthenticationIP", ""),
     }
 
 
@@ -947,7 +963,7 @@ def _auto_merge_into_epg(channels: list) -> None:
     try:
         if not config.get_settings().get("telecom_auto_add_to_epg", True):
             return
-        merged = config.merge_telecom_channels_into_epg(channels)
+        merged = config.merge_telecom_channels_into_epg(channels, "huawei")
         if merged.get("added"):
             telecom_log(
                 f"已自动加入 {merged['added']} 个频道到「EPG 管理」（共 {merged['total']} 个）"

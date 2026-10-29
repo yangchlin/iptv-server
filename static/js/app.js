@@ -11,12 +11,16 @@ let currentPage = 1;
 let downloading = false;
 let downloadAutoRefresh = null;
 
+// ★ 新增：EPG 管理勾选、M3U 勾选、外部 EPG 失败告警
+let _epgChSel = new Set();        // Set<logic_id>
+let _m3uSel = new Set();          // Set<index>
+let _epgFailures = [];
+
 // ==================== 工具函数 ====================
 function $(id){return document.getElementById(id)}
 function qs(s){return document.querySelector(s)}
 function qsa(s){return document.querySelectorAll(s)}
 
-// ★ 修复：补单引号转义，避免 onclick="fn('...')" 属性注入
 function escapeHtml(s){
   if(!s&&s!==0) return '';
   return String(s)
@@ -27,52 +31,43 @@ function escapeHtml(s){
     .replace(/'/g,'&#39;');
 }
 
-// ★ 新增：安全地把任意字符串作为 JS 参数嵌入 onclick / onchange
-// 双重保护：先 JSON.stringify（内部引号、反斜杠都转义），再 HTML 属性转义
-// 用法：onclick="fn(${jsArg(x)})"  →  onclick="fn(&quot;xxx&quot;)"
 function jsArg(x){
   return escapeHtml(JSON.stringify(String(x == null ? '' : x)));
 }
 
 function showToast(msg,type){
  const d=document.createElement('div');
- // 改为固定居中显示，顶部留出 70px 避开你的深色头部，增加丝滑动画
  d.style.cssText=`position:fixed;top:70px;left:50%;transform:translateX(-50%) translateY(-20px);padding:12px 24px;border-radius:8px;z-index:10000;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.12);opacity:0;transition:all .3s cubic-bezier(0.16,1,0.3,1);
  background:${type==='error'?'#fff2f0':type==='success'?'#f6ffed':'#fff7e6'};
  color:${type==='error'?'#ff4d4f':type==='success'?'#52c41a':'#d46b08'};
  border:1px solid ${type==='error'?'#ffccc7':type==='success'?'#b7eb8f':'#ffe58f'};
  display:flex;align-items:center;gap:8px;font-weight:500;`;
  
- // 增加对应类型的 Emoji 图标，更显眼
  const icon = type === 'error' ? '❌' : (type === 'success' ? '✅' : 'ℹ️');
  d.innerHTML = `<span style="font-size:16px">${icon}</span><span>${escapeHtml(msg)}</span>`;
 
  document.body.appendChild(d);
  
- // 触发滑入动画
  requestAnimationFrame(() => {
    d.style.transform = 'translateX(-50%) translateY(0)';
    d.style.opacity = '1';
  });
 
- // 3秒后触发滑出消失动画
+ // 允许传入自定义停留时间，默认 3 秒
+ const stayTime = arguments[2] || 3000;
  setTimeout(()=>{
    d.style.opacity='0';
    d.style.transform='translateX(-50%) translateY(-20px)';
    setTimeout(()=>d.remove(),300)
- },3000)
+ }, stayTime)
 }
 
-// ==================== 自定义确认弹窗 ====================
-// 替代原生的 confirm()，避免被浏览器拦截，风格更统一
 function customConfirm(msg, title = '确认操作', okText = '确定', cancelText = '取消') {
   return new Promise((resolve) => {
-    // 保存原有的内容以便恢复（防止弹窗冲突）
     const oldTitle = $('modalTitle').textContent;
     const oldBody = $('modalBody').innerHTML;
     const oldActions = $('modalActions').innerHTML;
     
-    // 设置新的弹窗内容
     $('modalTitle').textContent = title;
     $('modalBody').innerHTML = `<div style="padding: 10px 0; font-size: 14px; line-height: 1.6; color: var(--text);">${escapeHtml(msg).replace(/\n/g, '<br>')}</div>`;
     $('modalActions').innerHTML = `
@@ -80,32 +75,25 @@ function customConfirm(msg, title = '确认操作', okText = '确定', cancelTex
       <button class="btn btn-primary" id="customConfirmOk">${okText}</button>
     `;
     
-    // 显示弹窗
     $('modal').classList.add('active');
     
     const cleanup = () => {
       $('modal').classList.remove('active');
-      // 恢复原状态
       $('modalTitle').textContent = oldTitle;
       $('modalBody').innerHTML = oldBody;
       $('modalActions').innerHTML = oldActions;
     };
 
-    // 绑定按钮事件
     $('customConfirmOk').onclick = () => { cleanup(); resolve(true); };
     $('customConfirmCancel').onclick = () => { cleanup(); resolve(false); };
     
-    // 点击遮罩层也可以关闭（取消）
     $('modal').onclick = (e) => {
       if (e.target === $('modal')) { cleanup(); resolve(false); }
     };
   });
 }
 
-// ==================== 列宽拖拽（所有表格通用） ====================
-// 任意表格（包括 JS 动态生成的）表头都会自动出现拖拽手柄：
-//   · 拖动 = 调整该列与右侧列的宽度
-//   · 松手写入 data/config/column_widths.json，刷新后保持
+// ==================== 列宽拖拽 ====================
 let _colWidths = {}
 let _colWidthsLoaded = false
 
@@ -140,7 +128,6 @@ function applyColWidths(table,i1,i2,cw,nw,sw,nsw){
  })
 }
 
-// 把保存过的列宽套到表头和每一行的单元格上
 function applyStoredWidth(tbl, th){
  const w = _colWidths[colKey(tbl, th)]
  if(!(w > 20)) return
@@ -165,23 +152,21 @@ function applyTableColWidths(tbl){
 
 function applyAllColWidths(){ document.querySelectorAll('table').forEach(applyTableColWidths) }
 
-// 给所有表头补拖拽手柄（已有的跳过，可重复调用）
 function ensureResizeHandles(root){
  ;(root || document).querySelectorAll('table').forEach(tbl=>{
   const heads = tbl.querySelectorAll('thead tr:last-child th')
   heads.forEach((th, i)=>{
-   if(i >= heads.length - 1) return                 // 最后一列右边没有下一列可分配
+   if(i >= heads.length - 1) return
    if(th.querySelector('.resize-handle')) return
    const span = document.createElement('span')
    span.className = 'resize-handle'
    th.appendChild(span)
   })
-  applyTableColumnOrder(tbl)      // 先恢复列顺序，再按（跟着列走的）列宽设置
+  applyTableColumnOrder(tbl)
   applyTableColWidths(tbl)
  })
 }
 
-// 事件委托：静态表 / 后渲染的表都用同一套拖拽逻辑
 document.addEventListener('mousedown', function(e){
  const handle = e.target && e.target.closest ? e.target.closest('th > .resize-handle') : null
  if(!handle) return
@@ -191,7 +176,6 @@ document.addEventListener('mousedown', function(e){
  if(!table) return
  const row = th.parentElement
  const idx = Array.from(row.children).indexOf(th)
- // 跳过隐藏列（M3U 的「频道分组 / 频道图标」），否则拖拽时宽度会越拖越窄
  let nIdx = idx + 1
  while(nIdx < row.children.length && row.children[nIdx].offsetWidth === 0) nIdx++
  if(nIdx >= row.children.length) return
@@ -216,7 +200,6 @@ document.addEventListener('mousedown', function(e){
  document.addEventListener('mouseup', onMouseUp)
 })
 
-// 动态渲染出来的表格（M3U 文件列表、电信频道表等）一出现就补手柄 + 恢复列宽
 let _resizeScanTimer = null
 function scheduleResizeScan(){
  if(_resizeScanTimer) return
@@ -236,12 +219,10 @@ if(document.readyState === 'loading'){
  try{ ensureResizeHandles() }catch(e){}
 }
 
-// ==================== 列顺序（拖动表头调整前后位置） ====================
-// 按住表头横向拖动 = 把这一列插到目标列的位置（整张表所有行一起动），
-// 松手后写入 data/config/column_order.json，刷新 / 重新渲染后保持。
+// ==================== 列顺序 ====================
 let _colOrder = {}
 let _colOrderLoaded = false
-let _colNatural = {}      // 每张表的“自然列序”（首次见到、还没被搬动时记下来）
+let _colNatural = {}
 
 function colName(th){
  return ((th && th.textContent) || '').trim().substring(0, 20)
@@ -252,10 +233,6 @@ function headerNames(tbl){
  return headRow ? Array.from(headRow.children).map(colName) : null
 }
 
-// 把一张表的所有行按 order（列名数组）重排；返回是否真的搬动了 DOM。
-// 每行用 data-col-order 记住自己当前是哪种顺序，这样：
-//   · 新渲染出来的 <tbody>（自然顺序）能被正确重排
-//   · 已经排好的行不会重复搬动（避免走进观察器死循环）
 function applyColumnOrder(tbl, order){
  if(!tbl) return false
  const key = tableKey(tbl)
@@ -263,18 +240,18 @@ function applyColumnOrder(tbl, order){
  if(!want || !want.length) return false
  const names = headerNames(tbl)
  if(!names) return false
- if(!_colNatural[key]) _colNatural[key] = names.slice()   // 首次见到即自然顺序
+ if(!_colNatural[key]) _colNatural[key] = names.slice()
  const nat = _colNatural[key]
- if(nat.length !== want.length) return false               // 列数变了（版本升级），先不套
+ if(nat.length !== want.length) return false
  const sig = want.join('\u0001')
  let moved = false
  tbl.querySelectorAll('tr').forEach(tr=>{
-  if(tr.children.length !== nat.length) return            // 空态行（colspan）等跳过
+  if(tr.children.length !== nat.length) return
   const cur = tr.dataset.colOrder ? tr.dataset.colOrder.split('\u0001') : nat
   const idxs = want.map(n => cur.indexOf(n))
   if(idxs.some(i => i < 0)) return
   tr.dataset.colOrder = sig
-  if(idxs.every((v, i) => v === i)) return                 // 这一行已经是目标顺序
+  if(idxs.every((v, i) => v === i)) return
   const cells = Array.from(tr.children)
   const frag = document.createDocumentFragment()
   idxs.forEach(i=>frag.appendChild(cells[i]))
@@ -312,8 +289,8 @@ document.addEventListener('mousedown', function(e){
  if(e.button !== 0) return
  const th = e.target && e.target.closest ? e.target.closest('thead th') : null
  if(!th) return
- if(e.target.closest('.resize-handle')) return                       // 拖边=改宽度
- if(e.target.closest('input,select,button,a,textarea,label')) return  // 表头里有控件就不抢
+ if(e.target.closest('.resize-handle')) return
+ if(e.target.closest('input,select,button,a,textarea,label')) return
  const table = th.closest('table')
  if(!table) return
  _colDrag = { table: table, th: th, startX: e.clientX, startY: e.clientY, active: false }
@@ -369,7 +346,7 @@ function onColDragEnd(e){
  showToast('列顺序已保存：' + colName(d.th), 'success')
 }
 
-// ==================== 表格行拖动高亮（所有带 ☰ 的可拖拽行） ====================
+// ==================== 表格行拖动高亮 ====================
 function cleanupRowDrag(){
  document.querySelectorAll('tr.drag-src,tr.drag-over').forEach(t=>t.classList.remove('drag-src','drag-over'))
  document.body.classList.remove('row-dragging')
@@ -397,7 +374,6 @@ document.addEventListener('drop',cleanupRowDrag)
 document.addEventListener('dragend',cleanupRowDrag)
 
 async function saveColumnWidths(){
- // 没成功读到旧值时不写，避免把已经保存的其它表格列宽覆盖掉
  if(!_colWidthsLoaded) return
  try{
   await fetch('/api/column-widths',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(_colWidths)})
@@ -431,9 +407,8 @@ document.querySelectorAll('.tab').forEach(tab=>{
 
   try {
     if(tab.dataset.tab==='dashboard'){refreshStatus();refreshGlobalLogs().catch(()=>{})}
-    if(tab.dataset.tab==='telecom'){if(window.loadTelecomSchedule)loadTelecomSchedule();if(window.refreshTelecomLog)refreshTelecomLog();refreshTelecomStatus()}
-	if(tab.dataset.tab==='telecom_channels'){if(window.loadTelecomChannelsPage)loadTelecomChannelsPage();} // ★ 新增独立 Tab 加载
-    if(tab.dataset.tab==='channels'){renderChannels();setTimeout(reapplyColWidths,50);refreshTelecomStatus()}
+    if(tab.dataset.tab==='telecom'){if(window.loadTelecomSchedule)loadTelecomSchedule();if(window.loadTelecomPlatform)loadTelecomPlatform();if(window.refreshTelecomLog)refreshTelecomLog();refreshTelecomStatus()}
+	if(tab.dataset.tab==='telecom_channels'){if(window.loadTelecomChannelsPage)loadTelecomChannelsPage();}
     if(tab.dataset.tab==='epg'){renderEpgSources();renderEpgExtracts();setTimeout(reapplyColWidths,100);refreshTelecomStatus();refreshEpgPickSummary();loadCronSettings()}
     if(tab.dataset.tab==='m3u'){renderM3uFiles();setTimeout(reapplyColWidths,50);loadM3uConfigPanel()}
     if(tab.dataset.tab==='epgchannels'){loadEpgChannels();setTimeout(reapplyColWidths,50)}
@@ -451,43 +426,32 @@ document.querySelectorAll('.tab').forEach(tab=>{
 async function refreshStatus(){
  try{
   const r=await fetch('/api/status');
-  
-  // ★ 新增：检查 HTTP 状态码
   if(!r.ok){
     if(r.status === 401) throw new Error('未登录或登录已过期');
     throw new Error('HTTP ' + r.status);
   }
-  
   const d=await r.json()
-  
-  // ★ 只显示系统运行状态
   let sysStatus = d.downloading ? '⚡ 任务执行中' : '🟢 运行中'
+  if(d.telecom_platform_label) sysStatus += ' · 电信平台：' + d.telecom_platform_label
   $('statusInfo').textContent = sysStatus
-  
   $('clock').textContent=new Date().toLocaleString('zh-CN',{hour12:false})
   if(d.stats){
-   $('statChannels').textContent=d.stats.channel_total||'-'
-   // ★ 删掉了 statJsonFiles 这一行，防止报错
-   $('statIcons').textContent=d.stats.icon_count||'-'
-   $('statXmlSize').textContent=d.stats.xml_size||'-'
+   $('statChannels').textContent = d.stats.channel_total ?? '-'
+   $('statIcons').textContent = d.stats.icon_count ?? '-'
+   $('statXmlSize').textContent = d.stats.xml_size ?? '-'
   }
  }catch(e){
-  // ★ 修改这里：显示真实错误原因
   let errMsg = e.message || '未知错误';
   if (/NetworkError|Failed to fetch|Load failed/i.test(errMsg)) {
     errMsg = '网络请求失败或已被拦截';
   }
-  $('statusInfo').textContent='🔴 ' + e.message; 
+  $('statusInfo').textContent = '🔴 ' + errMsg;
  }
 }
 
-
-
-// ==================== 计时器 ====================
 setInterval(refreshStatus,10000)
 setInterval(()=>{$('clock').textContent=new Date().toLocaleString('zh-CN',{hour12:false})},1000)
 
-// ==================== XML直链 ====================
 async function loadXmlLink(){
  try{
   const sR=await fetch('/api/settings');const sD=await sR.json()
@@ -508,14 +472,12 @@ function toggleXmlGz(){
 
 loadXmlLink()
 
-// ==================== 频道管理 ====================
 async function loadChannels(){
- // 频道管理页已删除；这里只保留数据（EPG 管理编辑来源时会用到 channels）
  const r=await fetch('/api/channels');const d=await r.json()
  channels=d.channels||[]
 }
 let dragIdx=null
-// ==================== 下载操作 ====================
+
 async function startDownload(){
  if(downloading){showToast('已有任务在运行','error');return}
  const r=await fetch('/api/download/start',{method:'POST'})
@@ -562,15 +524,11 @@ async function pollDownloadProgress(){
    if(downloadAutoRefresh){clearInterval(downloadAutoRefresh);downloadAutoRefresh=null}
    showToast('下载任务已完成','success')
    loadChannels()
-   loadEpgSources()          // ← 新增：刷新 EPG 源的「已下载」状态
+   loadEpgSources()
   }
  }catch(e){}
 }
 
-// ==================== 全局进度监控 ====================
-// 注意：这里绝不能切换 #globalProgress 的 display —— 它参与正常文档流，
-// 一隐一显会把下面整块内容顶上去，就是「页面上下抖动」的原因。
-// 只改文案和宽度，元素高度由 CSS 的 min-height 固定。
 function clearGlobalProgress(){
  const f=$('gpFill'), p=$('gpPct'), t=$('gpTitle')
  if(f) f.style.width='0%'
@@ -592,7 +550,6 @@ async function pollGlobalProgress(){
    const title=last.replace(/^\[[^\]]+\]\s*/,'')
    $('gpTitle').textContent=title
   }else if(running){
-   // running 但没有 messages = 电信任务（它不写全局进度）
    clearGlobalProgress()
   }else{
    $('gpFill').style.width='0%'
@@ -605,7 +562,6 @@ async function pollGlobalProgress(){
      line=entries[0].line||('['+entries[0].timestamp+'] '+entries[0].message)
     }
    }catch(e){}
-   // 电信日志不上顶部条；用固定文案占位，保证高度不变
    if(line && line.indexOf('[电信]')===-1){
     $('gpTitle').textContent=line.replace(/\n/g,' ').substring(0,120)
    }else{
@@ -617,34 +573,44 @@ async function pollGlobalProgress(){
 
 setInterval(pollGlobalProgress,1000)
 
-// ==================== XML构建 ====================
 async function buildXml(){
  if(downloading){showToast('已有任务在运行','error');return}
  downloading=true
- const r=await fetch('/api/xml/build',{method:'POST'})
- const d=await r.json()
- downloading=false
- if(d.success){
-  showToast(`XML生成成功: ${d.channel_count||0}频道, ${d.programme_count||0}节目`,'success')
-  loadXmlLink()
- } else showToast('XML生成失败: '+(d.error||'未知错误'),'error')
- refreshStatus()
+ try{
+  const r=await fetch('/api/xml/build',{method:'POST'})
+  const d=await r.json()
+  if(d.success){
+   showToast(`XML生成成功: ${d.channel_count||0}频道, ${d.programme_count||0}节目`,'success')
+   loadXmlLink()
+  } else showToast('XML生成失败: '+(d.error||'未知错误'),'error')
+ }catch(e){
+  showToast('XML生成失败: '+(e.message||'网络异常'),'error')
+ }finally{
+  downloading=false
+  refreshStatus()
+ }
 }
 
 async function manualCleanup(){
  if(downloading){showToast('已有任务在运行','error');return}
  downloading=true
- const r=await fetch('/api/cleanup',{method:'POST'})
- const d=await r.json()
- downloading=false
- if(d.logs&&d.logs.length){
-  showToast(`清理完成，共${d.logs.length}条记录`,'success')
- }else{
-  showToast('清理完成，无需清理','success')
+ try{
+  const r=await fetch('/api/cleanup',{method:'POST'})
+  const d=await r.json()
+  if(d.logs&&d.logs.length){
+   showToast(`清理完成，共${d.logs.length}条记录`,'success')
+  }else{
+   showToast('清理完成，无需清理','success')
+  }
+  refreshGlobalLogs()
+  switchLogCategory('清理')
+ }catch(e){
+  showToast('清理失败: '+(e.message||'网络异常'),'error')
+ }finally{
+  downloading=false
+  refreshStatus()
  }
- refreshGlobalLogs()
- switchLogCategory('清理')}
- refreshStatus()
+}
 
 // ==================== 外部EPG源 ====================
 async function loadEpgSources(){
@@ -660,7 +626,7 @@ function renderEpgSources(){
  if(epgSourcePage>totalPages)epgSourcePage=totalPages
  const start=(epgSourcePage-1)*EPG_SOURCE_PAGE_SIZE
  const page=epgSources.slice(start,start+EPG_SOURCE_PAGE_SIZE)
- if(!total){tbody.innerHTML='<tr><td colspan="6" class="empty">暂无 EPG 源 —— 点「➕ 添加源」，或直接编辑 <code>data/config/app_config.json</code> 里的 <code>epg_sources</code></td></tr>';$('epgSourcePagination').innerHTML='';return}
+ if(!total){tbody.innerHTML='<tr><td colspan="8" class="empty">暂无 EPG 源 —— 点「➕ 添加源」，或直接编辑 <code>data/config/app_config.json</code> 里的 <code>epg_sources</code></td></tr>';$('epgSourcePagination').innerHTML='';return}
  tbody.innerHTML=page.map((s,i)=>{
   const realIdx=start+i
   return `<tr draggable="true"
@@ -668,14 +634,33 @@ function renderEpgSources(){
     ondrop="epgSrcDrop(event,${realIdx})"
     ondragover="event.preventDefault()">
    <td style="cursor:grab;text-align:center">☰</td>
-   <td style="word-break:break-all;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</td>
-   <td><input value="${escapeHtml(s.remark||'')}" style="border:none;background:transparent;width:100%" onchange="updateEpgSourceRemark(${realIdx},this.value)">${s.downloaded?'':' <span class="badge badge-danger" title="该源还没下载缓存，搜索不到里面的频道；点「⬇️ 下载EPG」">未下载</span>'}${s.parked?' <span class="badge badge-danger" style="opacity:.75" title="源已禁用，缓存改名挂起，不参与搜索/提取/合并">已挂起</span>':''}
-    <div style="font-size:11px;color:var(--text-secondary);word-break:break-all" title="缓存文件名（可在 ✏️ 里改）">缓存：${escapeHtml(s.cache_file||s.cache_target||s.cache_name||'—')}</div></td>
+   
+   <!-- URL 列 -->
+   <td style="word-break:break-all;" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</td>
+   
+   <!-- 备注列 -->
+   <td><input value="${escapeHtml(s.remark||'')}" style="border:none;background:transparent;width:100%" onchange="updateEpgSourceRemark(${realIdx},this.value)"></td>
+   
+   <!-- 规则列 -->
    <td style="text-align:center"><span class="badge badge-success">${escapeHtml(s.rule||'auto')}</span></td>
+   
+   <!-- 缓存文件列 -->
+   <td style="color:var(--text-secondary);word-break:break-all;" title="缓存文件：${escapeHtml(s.cache_file||s.cache_target||s.cache_name||'—')}">
+     ${escapeHtml(s.cache_file||s.cache_target||s.cache_name||'—')}
+   </td>
+   
+   <!-- 状态列 -->
+   <td style="text-align:center">
+     ${s.parked ? '<span class="badge badge-danger">已挂起</span>' : 
+       (s.downloaded ? '<span class="badge badge-success">已下载</span>' : '<span class="badge badge-danger">未下载</span>')}
+   </td>
+   
+   <!-- 开关列 -->
    <td style="text-align:center"><button class="badge ${s.enabled!==false?'badge-success':'badge-danger'}" style="border:0;cursor:pointer" onclick="toggleEpgSource(${realIdx})" title="点击切换 启用 / 禁用">${s.enabled!==false?'启用':'禁用'}</button></td>
-   <td style="text-align:center;white-space:nowrap">
-   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})"
-         title="下载该源（下载后自动合并，状态会变为已下载）">⬇️</button>
+   
+   <!-- 操作列 -->
+   <td style="text-align:center;">
+   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})" title="下载该源（下载后自动合并，状态会变为已下载）">⬇️</button>
    <button class="btn btn-sm" onclick="editEpgSource(${realIdx})">✏️</button>
    <button class="btn btn-sm btn-danger" onclick="deleteEpgSource(${realIdx})">✕</button>
    </td>
@@ -721,7 +706,6 @@ async function confirmAddEpgSource(){
  else showToast(d.error||'添加失败','error')
 }
 
-// 状态列：点一下切换启用 / 禁用（禁用后「下载EPG」和定时任务都会跳过它）
 async function toggleEpgSource(i){
  const s=epgSources[i]
  if(!s)return
@@ -821,6 +805,31 @@ async function downloadSingleEpgSource(i){
   } catch(e){ showToast('启动失败: '+e.message,'error') }
 }
 
+async function clearAllEpgCache() {
+  if (!await customConfirm('⚠️ 确定要清空所有缓存文件吗？\n\n这会删除所有已下载的 .xml 缓存，导致源频道列表变空。\n如果你之前加过源，需要重新点击「⬇️ 下载EPG」才能再次搜索和提取。', '清空 EPG 缓存')) {
+    return;
+  }
+  
+  try {
+    showToast('正在清空缓存...', 'info');
+    const r = await fetch('/api/epg/clear-cache', { method: 'POST' });
+    const d = await r.json();
+    
+    if (d.success) {
+      showToast(d.message || '缓存已清空', 'success');
+      // 1. 刷新源列表（状态会变成“未下载”）
+      await loadEpgSources();
+      // 2. 刷新提取弹窗里的列表（会变成空白）
+      await loadEpgPicker();
+      await refreshEpgPickSummary();
+    } else {
+      showToast(d.message || '清空失败', 'error');
+    }
+  } catch (e) {
+    showToast('清空失败: ' + e.message, 'error');
+  }
+}
+
 // ==================== EPG提取记录 ====================
 async function loadEpgExtracts(){
  const [r1,r2]=await Promise.all([
@@ -833,12 +842,10 @@ async function loadEpgExtracts(){
  epgChList.forEach(c=>{if(c.logic_id)epgChMap[c.logic_id]=c.name})
  renderEpgExtracts()
  
- // 若当前正在 EPG 管理页面，同步刷新列表以呈现最新的并入数据
  const p=$('panel-epgchannels')
  if(p && p.classList.contains('active')) renderEpgChannels()
 }
 
-// ---- 外部 EPG 频道名 → EPG 频道 的模糊匹配 ----
 function extractTargetName(e){
  const tid=e.target_logic_id||''
  if(!tid)return ''
@@ -850,17 +857,15 @@ function epgTargetOptions(cur){
   const lid=c.logic_id||''
   if(!lid)continue
   
-  // ★ 新增：提取来源标签
   let srcTag = '';
   const st = c.source_type || '';
-  if (st === 'telecom') srcTag = '[电信] ';
+  if (st === 'telecom') srcTag = '[' + (c.source_remark || '电信') + '] ';
   else if (st === 'manual') srcTag = '[手动] ';
   else if (st === 'extract') srcTag = '[' + (c.source_remark || '外部EPG') + '] ';
   else if (st === 'channel') srcTag = '[自建] ';
   else srcTag = '[' + (c.source_remark || '未知') + '] ';
 
   const mark=(lid===cur)?'selected':''
-  // ★ 修改：将来源标签加在最前面
   opts.push(`<option value="${escapeHtml(lid)}" ${mark}>${escapeHtml(srcTag)}${escapeHtml(c.name)}${c.tvg_id?' · tvg-id '+escapeHtml(c.tvg_id):''}</option>`)
  }
  return opts.join('')
@@ -870,17 +875,16 @@ window.filterEpgTargetOptions = function(kw){
   kw = String(kw||'').toLowerCase().trim();
   const sel = $('editExtTarget');
   if(!sel) return;
-  const cur = sel.value; // 保持当前已经选中的值
+  const cur = sel.value;
   const opts = ['<option value="">独立频道（不并入，单独建一条）</option>'];
   
   for (const c of (epgChList || [])) {
     const lid = c.logic_id || '';
     if (!lid) continue;
 
-    // ★ 新增：提取来源标签
     let srcTag = '';
     const st = c.source_type || '';
-    if (st === 'telecom') srcTag = '[电信] ';
+    if (st === 'telecom') srcTag = '[' + (c.source_remark || '电信') + '] ';
     else if (st === 'manual') srcTag = '[手动] ';
     else if (st === 'extract') srcTag = '[' + (c.source_remark || '外部EPG') + '] ';
     else if (st === 'channel') srcTag = '[自建] ';
@@ -888,13 +892,11 @@ window.filterEpgTargetOptions = function(kw){
 
     const txt = srcTag + c.name + (c.tvg_id ? ' · tvg-id ' + c.tvg_id : '');
     
-    // 如果没输入关键字，或者关键字匹配，或者这条是当前选中的，就显示
     if (kw && txt.toLowerCase().indexOf(kw) < 0 && lid !== cur) continue;
     const mark = (lid === cur) ? 'selected' : '';
     opts.push(`<option value="${escapeHtml(lid)}" ${mark}>${escapeHtml(txt)}</option>`);
   }
   sel.innerHTML = opts.join('');
-  // 恢复选中状态
   if (sel.value !== cur) sel.value = cur;
 }
 
@@ -917,7 +919,7 @@ function closeEpgExtractModal(){
  if(m) m.classList.remove('active')
 }
 
-// ==================== 源频道勾选（批量添加到 EPG 管理） ====================
+// ==================== 源频道勾选 ====================
 let epgPickChannels=[]
 let epgPickSel=new Map()
 let epgPickPage=1
@@ -927,8 +929,6 @@ const EPG_PICK_PAGE_SIZE=100
 function epgPickKey(c){return (c.name||'')+'\u0001'+(c.source_url||'')}
 
 function epgSourceLabel(u, fallback){
- // ★ 修复：后端 /api/epg/channels 已经按「缓存文件 → 源」精确算好了 source_name，
- //   直接用它；只有拿不到时才退化成 URL 尾部，避免前端再次做模糊匹配。
  if(fallback) return fallback
  const tail = String(u||'').split('/').pop().replace(/\.gz$/,'').replace(/\.xml$/,'')
  return tail || u || '外部EPG'
@@ -972,7 +972,7 @@ function buildEpgPickSourceSelect(){
  const sel=$('epgPickSource'); if(!sel)return
  const cur=sel.value
  const opts=['<option value="">全部来源</option>']
- const seen=new Map()      // url → 显示名
+ const seen=new Map()
  epgPickChannels.forEach(c=>{
   const u=c.source_url||''
   if(!u||seen.has(u))return
@@ -1026,9 +1026,9 @@ function renderEpgPicker(){
      :'<span class="badge badge-success">已添加</span>'
    return `<tr>
     <td style="text-align:center"><input type="checkbox" ${checked} style="width:auto" onchange="epgPickToggle(${jsArg(key)},this.checked)"></td>
-    <td style="font-size:12px">${escapeHtml(epgSourceLabel(c.source_url,c.source_name))}</td>
+    <td style="font-size:12px;word-break:break-all;">${escapeHtml(epgSourceLabel(c.source_url,c.source_name))}</td>
     <td>${escapeHtml(c.name||c.id)}</td>
-    <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(c.id||'')}</td>
+    <td style="font-size:12px;color:var(--text-secondary);word-break:break-all;">${escapeHtml(c.id||'')}</td>
     <td style="font-size:12px">${status}</td>
     <td style="text-align:center">${c.added?'':'<button class="btn btn-sm btn-primary" onclick="epgPickAddOne('+jsArg(key)+')">➕</button>'}</td>
    </tr>`
@@ -1084,13 +1084,18 @@ async function addChannelsToEpg(list){
    const cName = c.name || c.id || '';
    const cTvgId = c.id || '';
    
-   // ★ 修改：三项任意一项匹配上，就视为已存在
-   const existing = (epgChList || []).find(x => 
+   let matches = (epgChList || []).filter(x => 
        x.name === cName || 
        x.tvg_id === cTvgId || 
        x.tvg_name === cName ||
        x.tvg_name === cTvgId
    );
+   
+   let existing = matches.find(x => x.source_type === 'telecom');
+   
+   if (!existing && matches.length > 0) {
+       existing = matches[0];
+   }
    
    return {
      name: cName,
@@ -1158,9 +1163,9 @@ function renderEpgExtracts(){
   const tgt=extractTargetName(e)
   return `<tr>
    <td style="cursor:grab;text-align:center">☰</td>
-   <td>${escapeHtml(e.name)}${tgt?`<div style="font-size:11px;color:var(--success)">→ ${escapeHtml(tgt)}</div>`:''}</td>
-   <td>${escapeHtml(e.tvg_id||'')}</td>
-   <td>${escapeHtml(getEpgSourceRemark(e.source_url)||e.source||'')}</td>
+   <td style="word-break:break-all;">${escapeHtml(e.name)}${tgt?`<div style="font-size:11px;color:var(--success)">→ ${escapeHtml(tgt)}</div>`:''}</td>
+   <td style="word-break:break-all;">${escapeHtml(e.tvg_id||'')}</td>
+   <td style="word-break:break-all;">${escapeHtml(getEpgSourceRemark(e.source_url)||e.source||'')}</td>
    <td style="text-align:center"><span class="badge badge-success">${escapeHtml(e.rule||'auto')}</span></td>
    <td style="text-align:center;white-space:nowrap">
     <button class="btn btn-sm" onclick="editEpgExtract(${i})">✏️</button>
@@ -1209,7 +1214,6 @@ async function confirmEditEpgExtract(i){
  else showToast('保存失败','error')
 }
 
-// 单条删除
 async function deleteEpgExtract(i){
   if(!await customConfirm('确定要删除这条提取记录吗？\n（如果是独立频道，可去 EPG 管理页点「🧹 清理孤儿」删掉对应频道）'))return
   try {
@@ -1228,7 +1232,6 @@ async function deleteEpgExtract(i){
   }
 }
 
-// 一键清空
 async function clearAllEpgExtracts(){
   if(!await customConfirm('确定清空所有已配置的提取记录？\n（不会删除「EPG 管理」里的频道）'))return
   try {
@@ -1282,8 +1285,6 @@ async function syncAllAfterChange(){
  }
 }
 
-// ==================== EPG搜索 ====================
-// 表格重渲染后调用：补手柄 + 恢复列顺序 + 恢复列宽
 function reapplyColWidths(){
  try{ ensureResizeHandles() }catch(e){}
  applyAllColumnOrders()
@@ -1303,7 +1304,6 @@ async function loadEpgChannels(){
  renderEpgChannels()
 }
 async function refreshEpgChannels(){
- // 只增不删：把「外部 EPG 提取记录」增量补进 EPG 管理，不会删任何现有频道
  try{
   const r=await fetch('/api/epg-channels/sync-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})
   const d=await r.json()
@@ -1332,7 +1332,11 @@ function renderEpgChannels(){
  const tbody=$('epgChannelBody')
  if(!tbody) return
  const kw = ($('epgChSearch') || {}).value ? $('epgChSearch').value.toLowerCase().trim() : ''
- 
+
+ // 清掉已经不存在的 logic_id（防止上次残留）
+ const validLids = new Set(epgChList.map(c => String(c.logic_id||'')).filter(Boolean))
+ _epgChSel.forEach(lid => { if(!validLids.has(lid)) _epgChSel.delete(lid) })
+
  let filtered = epgChList.map((ch, i) => ({ch, i}))
  if(kw) {
    filtered = filtered.filter(({ch}) => {
@@ -1341,21 +1345,33 @@ function renderEpgChannels(){
      const merged = (epgExtracts || []).filter(e => e.target_logic_id === ch.logic_id)
      const mergedNames = merged.map(e => e.name).join(' ')
      const mergedSources = merged.map(e => e.source).join(' ')
-     
+
      const searchStr = `${ch.name || ''} ${ch.tvg_id || ''} ${tvgName} ${source} ${mergedNames} ${mergedSources}`.toLowerCase()
      return searchStr.includes(kw)
    })
  }
 
+ // 表头全选框同步
+ const allBox = $('epgChAllBox')
+ if(allBox){
+   const lids = filtered.map(({ch}) => String(ch.logic_id||'')).filter(Boolean)
+   allBox.checked = lids.length > 0 && lids.every(lid => _epgChSel.has(lid))
+ }
+
  if(!filtered.length){
-   tbody.innerHTML='<tr><td colspan="7" class="empty">'+(epgChList.length?'没有匹配项':'暂无EPG频道')+'</td></tr>'
+   tbody.innerHTML='<tr><td colspan="8" class="empty">'+(epgChList.length?'没有匹配项':'暂无EPG频道')+'</td></tr>'
    return
  }
- 
+
  tbody.innerHTML=filtered.map(({ch, i})=>{
+   const lid = String(ch.logic_id || '')
+   const checked = _epgChSel.has(lid) ? 'checked' : ''
    const mergedExtracts = (epgExtracts || []).filter(e => e.target_logic_id === ch.logic_id)
-   
-   let tvgNameHtml = `<input value="${escapeHtml(ch.tvg_name||ch.name||'')}" style="width:100%;border:none;background:transparent" onchange="updateEpgChField(${i},'tvg_name',this.value)">`
+
+   let tvgNameHtml = `<input value="${escapeHtml(ch.tvg_name||ch.name||'')}" style="width:100%;border:none;background:transparent"
+        onmousedown="this.closest('tr').setAttribute('draggable','false')"
+        onmouseup="this.closest('tr').setAttribute('draggable','true')"
+        onchange="updateEpgChField(${i},'tvg_name',this.value)">`
    if(mergedExtracts.length > 0) {
      const otherNames = mergedExtracts.map(e => e.name).filter(n => n && n !== (ch.tvg_name||ch.name))
      if(otherNames.length > 0) {
@@ -1363,30 +1379,38 @@ function renderEpgChannels(){
      }
    }
 
-   let sourceHtml = (function(){
-     const st=ch.source_type||'';
-     if(st==='extract'){
-       const remark=ch.source_remark||'';
-       const en=ch.extract_name||'';
-       if(en&&en!==ch.name){return escapeHtml(remark)+' ('+escapeHtml(en)+')'}
-       return escapeHtml(remark)
-     }
-     return escapeHtml(ch.source_remark||'自建json')
-   })()
-   
-   if(mergedExtracts.length > 0) {
-     const otherSources = [...new Set(mergedExtracts.map(e => e.source).filter(Boolean))]
-     const mainSource = ch.source_remark || ''
-     const extraSources = otherSources.filter(s => s !== mainSource)
-     if(extraSources.length > 0) {
-       sourceHtml += `<div style="font-size:11px;color:var(--text-secondary);margin-top:2px;line-height:1.2;word-break:break-all">并入: ${extraSources.map(escapeHtml).join(' / ')}</div>`
-     }
+   let mainSource = '';
+   const st = ch.source_type || '';
+   if (st === 'extract') {
+     const remark = ch.source_remark || '';
+     const en = ch.extract_name || '';
+     mainSource = (en && en !== ch.name) ? (remark + ' (' + en + ')') : remark;
+   } else {
+     mainSource = ch.source_remark || '自建json';
    }
 
+   const otherSources = [...new Set(mergedExtracts.map(e => e.source).filter(Boolean))];
+   const extraSources = otherSources.filter(s => s !== mainSource && s !== ch.source_remark);
+
+   let allSources = [mainSource, ...extraSources].filter(Boolean);
+   allSources = [...new Set(allSources)];
+
+   let sourceHtml = `<span style="word-break:break-all;">${allSources.map(escapeHtml).join(' / ')}</span>`;
+
    return `<tr draggable="true" ondragstart="epgDragStart(event,${i})" ondrop="epgDrop(event,${i})" ondragover="event.preventDefault()">
+   <td style="text-align:center"><input type="checkbox" ${checked} style="width:auto"
+        onchange="epgChSelectOne(${jsArg(lid)}, this.checked)"></td>
    <td style="cursor:grab;text-align:center">☰</td>
-   <td><input value="${escapeHtml(ch.name)}" style="border:none;background:transparent;width:100%" onchange="updateEpgChField(${i},'name',this.value)"></td>
-   <td><input value="${escapeHtml(ch.tvg_id||'')}" style="width:100%;border:none;background:transparent" onchange="updateEpgChField(${i},'tvg_id',this.value)"></td>
+
+   <td><input value="${escapeHtml(ch.name)}" style="border:none;background:transparent;width:100%"
+        onmousedown="this.closest('tr').setAttribute('draggable','false')"
+        onmouseup="this.closest('tr').setAttribute('draggable','true')"
+        onchange="updateEpgChField(${i},'name',this.value)"></td>
+
+   <td><input value="${escapeHtml(ch.tvg_id||'')}" style="width:100%;border:none;background:transparent"
+        onmousedown="this.closest('tr').setAttribute('draggable','false')"
+        onmouseup="this.closest('tr').setAttribute('draggable','true')"
+        onchange="updateEpgChField(${i},'tvg_id',this.value)"></td>
    <td>${tvgNameHtml}</td>
    <td style="font-size:11px">${sourceHtml}</td>
    <td style="text-align:center"><span class="badge ${ch.enabled!==false?'badge-success':'badge-danger'}">${ch.enabled!==false?'启用':'禁用'}</span></td>
@@ -1394,6 +1418,71 @@ function renderEpgChannels(){
   </tr>`
  }).join('')
 }
+
+function epgChSelectOne(lid, checked){
+  lid = String(lid || '')
+  if(!lid) return
+  if(checked) _epgChSel.add(lid); else _epgChSel.delete(lid)
+  // 更新表头全选框
+  const box = $('epgChAllBox')
+  if(box){
+    const kw = ($('epgChSearch') || {}).value ? $('epgChSearch').value.toLowerCase().trim() : ''
+    const rows = epgChList.filter(ch => {
+      if(!kw) return true
+      const hay = `${ch.name||''} ${ch.tvg_id||''} ${ch.tvg_name||''} ${ch.source_remark||''}`.toLowerCase()
+      return hay.includes(kw)
+    })
+    box.checked = rows.length > 0 && rows.every(c => _epgChSel.has(String(c.logic_id||'')))
+  }
+}
+
+function epgChToggleAll(checked){
+  const kw = ($('epgChSearch') || {}).value ? $('epgChSearch').value.toLowerCase().trim() : ''
+  epgChList.forEach(ch => {
+    const lid = String(ch.logic_id || '')
+    if(!lid) return
+    if(kw){
+      const hay = `${ch.name||''} ${ch.tvg_id||''} ${ch.tvg_name||''} ${ch.source_remark||''}`.toLowerCase()
+      if(!hay.includes(kw)) return
+    }
+    if(checked) _epgChSel.add(lid); else _epgChSel.delete(lid)
+  })
+  renderEpgChannels()
+}
+
+async function batchDeleteEpgCh(){
+  if(!_epgChSel.size){ showToast('请先勾选频道','error'); return }
+  if(!await customConfirm(`确定删除选中的 ${_epgChSel.size} 个频道？\n\n（并入到这些频道的外部提取记录也会被同步清理）`)) return
+  try{
+    const r = await fetch('/api/epg-channels/batch-delete', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({logic_ids:[..._epgChSel]})
+    })
+    const d = await r.json().catch(()=>({}))
+    if(!r.ok){ showToast('删除失败: '+(d.detail||r.status),'error'); return }
+    showToast(`已删除 ${d.deleted||0} 个频道`, 'success')
+    _epgChSel.clear()
+    await loadEpgChannels()
+    await loadEpgExtracts()
+    await syncAllAfterChange()
+  }catch(e){ showToast('删除失败: '+e.message,'error') }
+}
+
+async function batchToggleEpgCh(enabled){
+  if(!_epgChSel.size){ showToast('请先勾选频道','error'); return }
+  try{
+    const r = await fetch('/api/epg-channels/batch-toggle', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({logic_ids:[..._epgChSel], enabled})
+    })
+    const d = await r.json().catch(()=>({}))
+    if(!r.ok){ showToast('操作失败: '+(d.detail||r.status),'error'); return }
+    showToast(`已${enabled?'启用':'禁用'} ${d.affected||0} 个频道`, 'success')
+    _epgChSel.clear()
+    await loadEpgChannels()
+  }catch(e){ showToast('操作失败: '+e.message,'error') }
+}
+
 async function updateEpgChField(i,f,v){
  if(i<epgChList.length) epgChList[i][f]=v
  await fetch('/api/epg-channels/'+i,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({[f]:v})})
@@ -1416,21 +1505,23 @@ async function updateEpgChField(i,f,v){
   if($('m3uEditor')&&$('m3uEditor').style.display==='block') renderM3uTable(currentM3uEntries,_m3uOptions)
  }
 }
+
 async function toggleEpgCh(i){
  if(i<epgChList.length) epgChList[i].enabled=epgChList[i].enabled===false?true:false
  await fetch('/api/epg-channels/'+i,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:epgChList[i].enabled})})
  renderEpgChannels()
 }
+
 async function deleteEpgCh(i){
  if(!await customConfirm('确定删除该频道？\n（如果有外部EPG提取记录并入到了这个频道，这些提取记录也会被同步删除）'))return
+ const lid = String((epgChList[i]||{}).logic_id || '')
  await fetch('/api/epg-channels/'+i,{method:'DELETE'})
+ _epgChSel.delete(lid)          // ★ 新增这一行
  await loadEpgChannels()
- // ★ 新增：同步更新前端的提取记录数据，防止页面残留脏数据
- epgExtracts = await fetch('/api/epg/extracts').then(r=>r.json()).then(d=>d.extracts||[])
+ await loadEpgExtracts()
  await syncAllAfterChange()
 }
 
-// 手动添加 EPG 频道（不会被「刷新」同步删掉）
 function showAddEpgChannel(){
  $('modalTitle').textContent='➕ 添加 EPG 频道'
  $('modalBody').innerHTML=`
@@ -1464,36 +1555,6 @@ async function confirmAddEpgChannel(){
  await loadEpgChannels()
 }
 
-// ---- 排序（自然排序：CCTV2 排在 CCTV10 前面）----
-function cmpNatural(a,b){
- return String(a==null?'':a).localeCompare(String(b==null?'':b),'zh-Hans-CN',{numeric:true,sensitivity:'base'})
-}
-
-async function sortEpgChannels(by){
- if(!epgChList.length){showToast('没有频道可排序','error');return}
- const old=epgChList.slice()
- const sorted=old.slice().sort((x,y)=>cmpNatural(
-   by==='tvg_id'?(x.tvg_id||''):(x.name||''),
-   by==='tvg_id'?(y.tvg_id||''):(y.name||'')
- ))
- const indices=sorted.map(c=>old.indexOf(c))
- const r=await fetch('/api/epg-channels/reorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({indices})})
- if(!r.ok){showToast('排序失败','error');return}
- await loadEpgChannels()
- showToast('已按'+(by==='tvg_id'?'TVG-ID':'名称')+'排序','success')
-}
-
-function sortM3uEntries(by){
- if(!currentM3uEntries||!currentM3uEntries.length){showToast('没有可排序的条目','error');return}
- const key=e=>(by==='url')
-   ? ((e._urls&&e._urls[0])||e.url||'')
-   : (e.tvg_name||e.display_name||e.name||'')
- currentM3uEntries.sort((x,y)=>cmpNatural(key(x),key(y)))
- renderM3uTable(currentM3uEntries,_m3uOptions)
- autoSaveM3u()
- showToast('已按'+(by==='url'?'URL':'名称')+'排序','success')
-}
-
 let epgDragIdx=null
 function epgDragStart(e,i){epgDragIdx=i}
 async function epgDrop(e,i){
@@ -1512,23 +1573,110 @@ async function clearAllEpgChannels(){
  await fetch('/api/epg-channels/clear',{method:'POST'});loadEpgChannels()
 }
 
+async function showEpgPivot(){
+  const dateInput = prompt("查看日期(YYYYMMDD)，留空 = 今天：", "");
+  const q = dateInput && /^\d{8}$/.test(dateInput) ? '?date=' + dateInput : '';
+  let d;
+  try{
+    const r = await fetch('/api/epg/pivot' + q);
+    d = await r.json();
+    if(!r.ok){ showToast('获取失败: '+(d.detail||r.status),'error'); return; }
+  }catch(e){ showToast('获取失败: '+e.message,'error'); return; }
+
+  const rows = (d.rows||[]).map(r => {
+    const merged = r.merged_from.length
+      ? '<div style="font-size:11px;color:var(--text-secondary)">并入: '+r.merged_from.map(escapeHtml).join(' / ')+'</div>'
+      : ''
+    return `<tr>
+      <td style="word-break:break-all">${escapeHtml(r.name)}${merged}</td>
+      <td style="font-size:12px">${escapeHtml(r.tvg_id||'')}</td>
+      <td><span class="badge ${r.has_data?'badge-success':'badge-danger'}">${r.has_data?'有数据':'无数据'}</span></td>
+      <td style="font-size:12px">${escapeHtml(r.data_source)}</td>
+      <td style="text-align:right">${r.programme_count}</td>
+      <td style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(r.file||'—')}</td>
+    </tr>`
+  }).join('')
+
+  $('modalTitle').textContent = '📊 EPG 数据透视 · ' + d.date;
+  $('modalBody').innerHTML = `
+    <div style="margin-bottom:10px;font-size:13px">
+      共 <b>${d.total}</b> 个频道 ·
+      <span style="color:var(--success)">有数据 <b>${d.with_data}</b></span> ·
+      <span style="color:var(--danger)">无数据 <b>${d.without_data}</b></span>
+    </div>
+    <div style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="min-width:820px">
+        <thead><tr>
+          <th>频道</th><th>TVG-ID</th><th>状态</th><th>数据来源</th>
+          <th style="text-align:right">节目数</th><th>文件名</th>
+        </tr></thead>
+        <tbody>${rows || '<tr><td colspan="6" class="empty">没有 EPG 频道</td></tr>'}</tbody>
+      </table>
+    </div>`
+  $('modalActions').innerHTML = '<button class="btn" onclick="closeModal()">关闭</button>'
+  $('modal').classList.add('active')
+}
+
+async function pollEpgFailures(){
+  try{
+    const r = await fetch('/api/epg/failures')
+    const d = await r.json()
+    _epgFailures = d.failures || []
+    const dot = $('epgTabRedDot')
+    if(dot) dot.style.display = _epgFailures.length ? 'inline' : 'none'
+  }catch(e){}
+}
+setInterval(pollEpgFailures, 30000)
+
+async function showEpgFailures(){
+  if(!_epgFailures.length){ showToast('没有失败告警','success'); return }
+  const rows = _epgFailures.map(f => `
+    <tr>
+      <td style="word-break:break-all">${escapeHtml(f.remark || '')}
+        <div style="font-size:11px;color:var(--text-secondary);word-break:break-all">${escapeHtml(f.url)}</div>
+      </td>
+      <td style="color:var(--danger);font-size:12px;word-break:break-all">${escapeHtml(f.error)}</td>
+      <td style="font-size:12px;white-space:nowrap">${new Date(f.ts*1000).toLocaleString('zh-CN',{hour12:false})}</td>
+    </tr>`).join('')
+  $('modalTitle').textContent = '⚠️ 最近下载失败的 EPG 源（共 ' + _epgFailures.length + ' 个）'
+  $('modalBody').innerHTML = `
+    <div style="max-height:60vh;overflow:auto;border:1px solid var(--border);border-radius:6px">
+      <table style="min-width:700px">
+        <thead><tr><th>源</th><th>错误</th><th>时间</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`
+  $('modalActions').innerHTML = `
+    <button class="btn btn-danger" onclick="clearAllEpgFailures()">清除所有告警</button>
+    <button class="btn" onclick="closeModal()">关闭</button>`
+  $('modal').classList.add('active')
+}
+
+async function clearAllEpgFailures(){
+  await fetch('/api/epg/failures/clear', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'
+  })
+  _epgFailures = []
+  const dot = $('epgTabRedDot'); if(dot) dot.style.display = 'none'
+  closeModal()
+  showToast('已清除告警','success')
+}
+
 async function renderM3uFiles(){
  const r=await fetch('/api/m3u');const d=await r.json()
  const files=d.files||[]
  const container=$('m3uFileList')
  if(!files.length){container.innerHTML='<div class="empty">暂无M3U文件，请上传</div>';return}
- // ★ 修复：所有 onclick 里的文件名参数改用 jsArg，防引号注入
  container.innerHTML=`
  <table id="m3uFileTable"><thead><tr><th>文件名</th><th>频道数</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
  <tbody>${files.map(f=>`
   <tr>
-   <td>${escapeHtml(f.name)}</td>
-   <td>${f.channel_count||0}</td>
-   <td>${(f.size/1024).toFixed(1)} KB</td>
-   <td>${escapeHtml(f.mtime)}</td>
-   <td><button class="btn btn-sm" onclick="editM3uFile(${jsArg(f.name)})">✏️ 匹配</button>
+   <td style="white-space:nowrap">
+   <button class="btn btn-sm" onclick="editM3uFile(${jsArg(f.name)})">✏️ 匹配</button>
    <button class="btn btn-sm" onclick="copyM3uLink(${jsArg(f.name)})">📋 复制链接</button>
-   <button class="btn btn-sm btn-danger" onclick="deleteM3uFile(${jsArg(f.name)})">✕</button></td>
+   <button class="btn btn-sm" onclick="exportCleanM3u(${jsArg(f.name)})" title="只导出匹配到节目单的频道">📥 纯净版</button>
+   <button class="btn btn-sm btn-danger" onclick="deleteM3uFile(${jsArg(f.name)})">✕</button>
+   </td>
   </tr>`).join('')}</tbody></table>`
  reapplyColWidths()
 }
@@ -1568,12 +1716,20 @@ async function confirmM3uUrl(){
  const url=$('m3uUrlInput').value.trim()
  if(!url){showToast('请输入URL','error');return}
  try{
-  const resp=await fetch(url)
-  const text=await resp.text()
-  const filename=url.split('/').pop()||'m3u_remote.m3u'
-  const r=await fetch('/api/m3u/upload',{method:'POST',body:text,headers:{'Content-Type':'text/plain','Content-Disposition':`attachment; filename="${filename}"`}})
+  // ★ 修改：改为请求我们的后端接口，让后端去下载
+  const r=await fetch('/api/m3u/download-url',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({url})
+  })
   const d=await r.json()
-  if(d.success){showToast('添加成功','success');closeModal();renderM3uFiles()}
+  if(d.success){
+      showToast('添加成功','success')
+      closeModal()
+      renderM3uFiles()
+  }else{
+      showToast(d.detail || d.error || '下载失败','error')
+  }
  }catch(e){showToast('下载失败: '+e.message,'error')}
 }
 
@@ -1594,9 +1750,6 @@ async function deleteM3uFile(name){
 }
 
 function closeM3uEditor(){
- // ★ 关闭前先把防抖窗口里没落盘的改动立刻存掉：
- //   否则定时器会带着已清空的 currentM3uFile 触发，请求打到 /api/m3u/null/save，
- //   既丢掉这次编辑，又在 data/m3u 下留一个只有 "#EXTM3U" 的 null 文件
  m3uFlushPendingSave()
  $('m3uEditor').style.display='none'
  currentM3uFile=null
@@ -1604,8 +1757,6 @@ function closeM3uEditor(){
  localStorage.removeItem('m3u_editing')
 }
 async function editM3uFile(name){
- // ★ 等上一次保存真正落盘再读文件：刚点「关闭」就重新打开时，避免读到旧内容又被覆盖回去
- //   最多等 5 秒，避免网络卡住时连编辑器都打不开
  await Promise.race([m3uSaveChain,new Promise(r=>setTimeout(r,5000))])
  const merge=$('m3uMergeCheck')?$('m3uMergeCheck').checked:true
  const r=await fetch(`/api/m3u/${encodeURIComponent(name)}?merge=${merge}`);const d=await r.json()
@@ -1644,14 +1795,66 @@ async function editM3uFile(name){
  }catch(e){ _m3uIconFiles=[] }
  m3uSyncColumnVisibility()
 
- m3uMatchAllEntries()
- autoSaveM3u()
-
+ // ★ 修改：统计自动匹配的结果并自动保存
+ let epgMatchedCount = 0;
+ let iconMatchedCount = 0;
+ 
+ currentM3uEntries.forEach(e => {
+   m3uMatchEntry(e, _m3uOptions, _m3uIconFiles);
+   if (e._epg_matched) epgMatchedCount++;
+   if (e._icon_matched) iconMatchedCount++;
+ });
+ 
+ const total = currentM3uEntries.length;
+ const unmatchedEpg = total - epgMatchedCount;
+ 
+ if (epgMatchedCount > 0 || iconMatchedCount > 0) {
+   showToast(`自动匹配完成：节目单成功 ${epgMatchedCount} 个，台标成功 ${iconMatchedCount} 个`, 'success', 5000);
+   // 匹配完自动保存
+   autoSaveM3u();
+ } else if (total > 0) {
+   showToast(`未能自动匹配到节目单或台标，请手动选择`, 'error', 5000);
+ }
+ 
  localStorage.setItem('m3u_editing',name)
- $('m3uEditorTitle').textContent=`📝 匹配编辑: ${name}`
+ // 在标题旁显示匹配结果
+ const resultSpan = `<span style="font-size:12px;font-weight:normal;color:var(--text-secondary);margin-left:10px">
+   (自动匹配: 节目单 <b style="color:var(--success)">${epgMatchedCount}</b>, 台标 <b style="color:var(--success)">${iconMatchedCount}</b>)
+ </span>`;
+ $('m3uEditorTitle').innerHTML = `📝 匹配编辑: ${name} ${resultSpan}`;
  $('m3uEditor').style.display='block'
 
  renderM3uTable(currentM3uEntries, _m3uOptions)
+ 
+ // ★ 新增：询问是否自动匹配分组
+ setTimeout(async () => {
+   // 只要系统里配了规则，并且包含自动应用，就弹窗
+   if (typeof _groupRules !== 'undefined' && _groupRules.auto_apply && _groupRules.rules && _groupRules.rules.length > 0) {
+     const doGroup = await customConfirm('检测到您配置了「自动分组规则」，是否立即为当前列表应用分组匹配？\n\n(注：已有分组的频道不会被覆盖)', '自动匹配分组', '立即匹配', '暂不');
+     if (doGroup) {
+       let groupedCount = 0;
+       currentM3uEntries.forEach(e => {
+         // 仅对当前没有分组的频道进行匹配
+         if (!e.group_title || e.group_title.trim() === '') {
+           const cname = e.display_name || e.tvg_name || '';
+           const g = _applyGroupRuleForFrontend(cname, _groupRules);
+           if (g) {
+             e.group_title = g;
+             groupedCount++;
+           }
+         }
+       });
+       
+       if (groupedCount > 0) {
+         autoSaveM3u();
+         renderM3uTable(currentM3uEntries, _m3uOptions);
+         showToast(`已自动匹配 ${groupedCount} 个频道分组`, 'success');
+       } else {
+         showToast('未能匹配到新的分组', 'info');
+       }
+     }
+   }
+ }, 500); // 延迟一点，等界面渲染稳定
 }
 let m3uDragMouse={active:false,fromIdx:-1,startY:0,rowHeight:40}
 function m3uEditField(i,field,val){
@@ -1715,13 +1918,11 @@ async function m3uMouseUp(e){
 let m3uAutoSaveTimer=null
 let m3uPendingFile=null
 let m3uPendingEntries=null
-
-// 把 entries 写回指定 M3U 文件（失败静默，保持与原先 autoSaveM3u 一致）。
-// 所有保存串成一条链：既保证先后顺序，也让「刚关闭就重新打开」能等到写入完成再读文件。
 let m3uSaveChain=Promise.resolve()
+
 function m3uSaveEntries(file,entries){
  if(!file)return m3uSaveChain
- const body=JSON.stringify({entries:entries||[]})   // ★ 调用时快照，之后改动不会串到这次请求里
+ const body=JSON.stringify({entries:entries||[]})
  const run=()=>fetch('/api/m3u/'+encodeURIComponent(file)+'/save',{
   method:'POST',headers:{'Content-Type':'application/json'},
   body
@@ -1730,7 +1931,6 @@ function m3uSaveEntries(file,entries){
  return m3uSaveChain
 }
 
-// 立刻把还在防抖窗口里的改动落盘（关闭编辑器 / 切到别的文件前调用）
 function m3uFlushPendingSave(){
  if(!m3uAutoSaveTimer)return
  clearTimeout(m3uAutoSaveTimer)
@@ -1741,7 +1941,6 @@ function m3uFlushPendingSave(){
  if(file) m3uSaveEntries(file,entries)
 }
 
-// 丢弃待保存的改动（调用方已自己显式保存时用）
 function m3uDiscardPendingSave(){
  if(m3uAutoSaveTimer)clearTimeout(m3uAutoSaveTimer)
  m3uAutoSaveTimer=null
@@ -1792,11 +1991,39 @@ async function m3uToggleMerge(){
  editM3uFile(currentM3uFile)
 }
 
+async function m3uAutoGroup(){
+ if(!currentM3uEntries||!currentM3uEntries.length){showToast('没有可处理的条目','error');return}
+ if (typeof _groupRules === 'undefined' || !_groupRules.rules || !_groupRules.rules.length) {
+    showToast('请先在「合并工具配置」中配置分组规则', 'error'); return;
+ }
+ const doGroup = await customConfirm('是否立即为当前列表应用自动分组规则？\n(已有分组的频道不会被覆盖)', '自动匹配分组');
+ if (!doGroup) return;
+ 
+ let groupedCount = 0;
+ currentM3uEntries.forEach(e => {
+   if (!e.group_title || e.group_title.trim() === '') {
+     const cname = e.display_name || e.tvg_name || '';
+     const g = _applyGroupRuleForFrontend(cname, _groupRules);
+     if (g) {
+       e.group_title = g;
+       groupedCount++;
+     }
+   }
+ });
+ if (groupedCount > 0) {
+   autoSaveM3u();
+   renderM3uTable(currentM3uEntries, _m3uOptions);
+   showToast(`已自动匹配 ${groupedCount} 个频道分组`, 'success');
+ } else {
+   showToast('未能匹配到新的分组', 'info');
+ }
+}
+
 function m3uBatchReplace(){
  if(!currentM3uFile||!currentM3uEntries.length){showToast('请先打开一个 M3U 文件','error');return}
  $('modalTitle').textContent='🔁 批量替换 URL'
  $('modalBody').innerHTML=`
-  <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">将当前列表所有频道的 URL 中匹配的字段批量替换（如 rtp:// → http://192.168.1.1:1233/rtp/）</p>
+  <p style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">将当前列表所有频道的 URL 中匹配的字段批量替换</p>
   <div class="form-group"><label>查找</label><input id="m3uRepOld" placeholder="例如: rtp://"></div>
   <div class="form-group" style="margin-top:10px"><label>替换为</label><input id="m3uRepNew" placeholder="例如: http://192.168.1.1:1233/rtp/"></div>`
  $('modalActions').innerHTML=`
@@ -1831,11 +2058,8 @@ function confirmM3uBatchReplace(){
 
 function autoSaveM3u(){
  if(!currentM3uFile)return
- // 切到别的文件时，先把上一个文件没落盘的改动存掉，别被新文件的防抖覆盖
  if(m3uAutoSaveTimer&&m3uPendingFile!==currentM3uFile) m3uFlushPendingSave()
  if(m3uAutoSaveTimer)clearTimeout(m3uAutoSaveTimer)
- // 文件名和条目在“排程时”就绑定，回调里不再读全局，
- // 避免关闭编辑器后 currentM3uFile 变成 null、把改动写到 null 文件
  m3uPendingFile=currentM3uFile
  m3uPendingEntries=currentM3uEntries
  m3uAutoSaveTimer=setTimeout(()=>{
@@ -1847,27 +2071,96 @@ function autoSaveM3u(){
  },500)
 }
 
-function m3uMatchEntry(entry, options){
- const display=entry.display_name||entry.tvg_name||''
- if(!display) return false
- let matched=null
- if(entry.tvg_id&&entry.tvg_id!=='9999'){
-  matched=options.find(o=>o.tvg_id===entry.tvg_id&&o.tvg_name!=='暂无节目单')
- }
- if(!matched){
-  matched=options.find(o=>o.tvg_name===display&&o.tvg_name!=='暂无节目单')
- }
- if(!matched){
-  const clean=display.replace(/[\s\-（）()\[\]]/g,'')
-  matched=options.find(o=>o.tvg_name.replace(/[\s\-（）()\[\]]/g,'')===clean&&o.tvg_name!=='暂无节目单')
- }
- if(matched){
-  entry.tvg_name=matched.tvg_name
-  return true
- }else{
-  entry.tvg_name=display
-  return false
- }
+function m3uMatchEntry(entry, options, iconFiles) {
+  const display = entry.display_name || entry.tvg_name || '';
+  if (!display) return false;
+  
+  let matchedEpg = false;
+  let matchedIcon = false;
+  
+  // 提取干净的频道名用于模糊匹配（去掉空格、括号，以及高清/4K等后缀）
+  const cleanDisplay = display.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K|频道|综合)/gi, '').toLowerCase();
+
+  // ================= 1. 匹配节目单 =================
+  let epgMatch = null;
+  // 优先按 tvg-id 精确匹配
+  if (entry.tvg_id && entry.tvg_id !== '9999') {
+    epgMatch = options.find(o => o.tvg_id === entry.tvg_id && o.tvg_name !== '暂无节目单');
+  }
+  // 其次按名称精确匹配
+  if (!epgMatch) {
+    epgMatch = options.find(o => o.tvg_name === display && o.tvg_name !== '暂无节目单');
+  }
+  // 最后使用清洗后的名字模糊匹配
+  if (!epgMatch) {
+    epgMatch = options.find(o => {
+      const cleanOption = o.tvg_name.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K|频道|综合)/gi, '').toLowerCase();
+      return cleanOption === cleanDisplay && o.tvg_name !== '暂无节目单';
+    });
+  }
+
+  if (epgMatch) {
+    entry.tvg_id = epgMatch.tvg_id;
+    entry.tvg_name = epgMatch.tvg_name;
+    entry._epg_matched = true; // 打上自动匹配标记
+    matchedEpg = true;
+  } else {
+    entry.tvg_name = display;
+    entry._epg_matched = false;
+  }
+
+  // ================= 2. 匹配台标 =================
+  if (iconFiles && iconFiles.length > 0) {
+    let iconMatch = null;
+    // 优先用匹配到的EPG名称找台标，找不到再用原名称
+    const searchName = entry.tvg_name || display;
+    const cleanSearchName = searchName.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K)/gi, '').toLowerCase();
+
+    for (const f of iconFiles) {
+      // 去掉后缀 .png/.jpg 等
+      const fileNameWithoutExt = f.name.substring(0, f.name.lastIndexOf('.'));
+      const cleanFileName = fileNameWithoutExt.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K)/gi, '').toLowerCase();
+      
+      if (cleanFileName === cleanSearchName || fileNameWithoutExt.toLowerCase() === searchName.toLowerCase()) {
+        iconMatch = f;
+        break;
+      }
+    }
+
+    if (iconMatch) {
+      // 如果原本没有台标，或者原本的台标不是本站的，才进行替换
+      const oldLogo = entry.tvg_logo || '';
+      const isOldLocal = oldLogo.includes('/api/download/') || oldLogo.includes('/logo/');
+      if (!oldLogo || !isOldLocal) {
+        entry.tvg_logo = m3uIconFullUrl(iconMatch.url);
+        entry._icon_matched = true;
+        matchedIcon = true;
+      }
+    }
+  }
+  
+  return matchedEpg || matchedIcon;
+}
+
+// 根据已配置的规则计算分组
+function _applyGroupRuleForFrontend(name, groupRules) {
+  if (!groupRules || !groupRules.rules || !groupRules.rules.length) return '';
+  const rules = groupRules.rules.filter(r => r.enabled !== false).sort((a,b) => (a.priority||999) - (b.priority||999));
+  const defaultG = groupRules.default_group || '';
+
+  for (const rule of rules) {
+    const gname = (rule.name || '').trim();
+    if (!gname) continue;
+    const mt = rule.match_type || 'keyword';
+    if (mt === 'keyword') {
+      const kws = (rule.keywords || []).map(k=>k.trim()).filter(Boolean);
+      if (kws.some(kw => name.includes(kw))) return gname;
+    } else if (mt === 'channels') {
+      const chs = (rule.channels || []).map(c=>c.trim()).filter(Boolean);
+      if (chs.includes(name)) return gname;
+    }
+  }
+  return defaultG;
 }
 
 function m3uMatchAllEntries(){
@@ -1943,43 +2236,12 @@ function m3uAddUrl(i){
   if(tbody){
    const rows=tbody.querySelectorAll('tr')
    if(rows[i]){
-    // ★ 按 id 找 URL 单元格：列顺序可以拖动，nth-child(2) 不再等于 URL 列
-    const urlTd=document.getElementById('m3uUrlTd'+i)||rows[i].querySelector('td:nth-child(2)')
+    const urlTd=document.getElementById('m3uUrlTd'+i)||rows[i].querySelector('td:nth-child(3)')
     const inputs=urlTd?urlTd.querySelectorAll('input'):[]
     if(inputs.length) inputs[inputs.length-1].focus()
    }
   }
  },50)
-}
-async function m3uSyncChanName(i){
- const entry=currentM3uEntries[i]
- if(!entry) return
- const dn=entry.display_name||entry.tvg_name||''
- if(!dn) return
- const matched=_m3uOptions.find(o=>o.tvg_id===entry.tvg_id&&o.tvg_id!=='9999')
- if(!matched) return
- try{
-  const r=await fetch('/api/channels?_='+Date.now());const d=await r.json()
-  const chs=d.channels||[]
-  const ci=chs.findIndex(ch=>ch.tvg_id===matched.tvg_id)
-  if(ci>=0){await fetch('/api/channels/'+ci,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:dn})});if(ci<channels.length)channels[ci].name=dn}
- }catch(e){}
- try{
-  const r=await fetch('/api/epg-channels?_='+Date.now());const d=await r.json()
-  const ecs=d.channels||[]
-  const ei=ecs.findIndex(ch=>ch.tvg_id===matched.tvg_id)
-  if(ei>=0) await fetch('/api/epg-channels/'+ei,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:dn,tvg_name:dn})})
- }catch(e){}
- entry.tvg_name=dn
- try{
-  const r=await fetch('/api/epg-channels?_='+Date.now());const d=await r.json()
-  const list=d.channels||[]
-  _m3uOptions=[{tvg_id:'9999',tvg_name:'暂无节目单'}]
-  list.forEach(ch=>{if(ch.name&&ch.name!=='暂无节目单')_m3uOptions.push({tvg_id:ch.tvg_id||'',tvg_name:ch.name})})
- }catch(e){}
- renderM3uTable(currentM3uEntries, _m3uOptions)
- autoSaveM3u()
- showToast('已同步频道名称: '+dn,'success')
 }
 function renderM3uTable(entries, opts){
  const tbody=$('m3uEditBody')
@@ -1992,39 +2254,139 @@ function renderM3uTable(entries, opts){
   const foldCount=urls.length-maxShow
   const showFold=foldCount>0&&!e._expanded
   const showUnfold=(e._expanded||!mergeOn)&&urls.length>2
+  const checked = _m3uSel.has(i) ? 'checked' : ''
   return `<tr style="user-select:none">
-   <td style="text-align:center;cursor:grab;vertical-align:top;padding-top:8px" onmousedown="m3uMouseDown(event,${i})">☰</td>
-   <td id="m3uUrlTd${i}" ondragover="event.preventDefault()" style="padding:4px 8px">
-    <div style="display:flex;flex-direction:column;gap:3px">
-     ${shown.map((url,ui)=>'<input value="'+escapeHtml(url)+'" style="font-size:11px;word-break:break-all;width:100%;border:none;background:transparent;padding:2px 4px;margin:0" onblur="m3uEditUrl('+i+','+ui+',this.value)" placeholder="URL地址">').join('')}
-     ${showFold?'<div style="padding:2px 0;cursor:pointer;text-align:center;font-size:12px;color:var(--primary)" onclick="m3uToggleFold('+i+')">+'+foldCount+' 条 <span style="font-size:10px">▼</span></div>':''}
-     ${showUnfold?'<div style="padding:2px 0;cursor:pointer;text-align:center;font-size:12px;color:var(--text-secondary)" onclick="m3uToggleFold('+i+')"><span style="font-size:10px">▲</span> 折叠</div>':''}
-    </div>
+   <!-- 0. 勾选 -->
+   <td style="text-align:center;vertical-align:top;padding-top:8px">
+    <input type="checkbox" ${checked} style="width:auto" onchange="m3uSelectOne(${i},this.checked)">
    </td>
-   <td id="m3uGrpTd${i}" style="vertical-align:top;padding-top:8px;display:none">${m3uRenderGroupCell(i,e)}</td>
-   <td id="m3uIcoTd${i}" style="vertical-align:top;padding-top:8px;display:none">${m3uRenderIconCell(i,e)}</td>
-   <td style="vertical-align:top;padding-top:8px"><input class="m3u-tvgid" value="${escapeHtml(e.tvg_id||'')}" style="width:100%;border:none;background:transparent" onblur="m3uEditField(${i},'tvg_id',this.value);renderM3uTable(currentM3uEntries,_m3uOptions)"></td>
-   <td style="vertical-align:top;padding-top:8px"><input class="m3u-tvgname" value="${escapeHtml(e.tvg_name||'')}" style="width:100%;min-width:100px;border:none;background:transparent" onblur="m3uEditField(${i},'tvg_name',this.value);renderM3uTable(currentM3uEntries,_m3uOptions)"></td>
+   <!-- 1. 拖拽 -->
+   <td style="text-align:center;cursor:grab;vertical-align:top;padding-top:8px" onmousedown="m3uMouseDown(event,${i})">☰</td>
+
+   <!-- 2. 频道名称 -->
    <td style="vertical-align:top;padding-top:8px">
     <div style="display:flex;align-items:center;gap:4px">
      <input value="${escapeHtml(e.display_name||'')}" style="border:none;background:transparent;width:100%" onblur="m3uEditField(${i},'display_name',this.value);renderM3uTable(currentM3uEntries,_m3uOptions)">
      ${(function(idx){const matched=opts.find(o=>o.tvg_id===e.tvg_id&&o.tvg_id!=='9999');if(!matched)return '';const dn=e.display_name||e.tvg_name||'';return dn===matched.tvg_name&&dn===(matched.epg_tvg_name||matched.tvg_name)?'':'<span title="显示名称与EPG频道名称不一致" style="color:#e6a23c;font-size:13px;cursor:pointer" onclick="m3uSyncChanName('+idx+')">⚠️</span>'})(i)}
     </div>
    </td>
+
+   <!-- 3. URL -->
+   <td id="m3uUrlTd${i}" ondragover="event.preventDefault()" style="padding:4px 8px;vertical-align:top;padding-top:8px">
+    <div style="display:flex;flex-direction:column;gap:3px">
+     ${shown.map((url,ui)=>'<input value="'+escapeHtml(url)+'" style="font-size:11px;word-break:break-all;width:100%;border:none;background:transparent;padding:2px 4px;margin:0" onblur="m3uEditUrl('+i+','+ui+',this.value)" placeholder="URL地址">').join('')}
+     ${showFold?'<div style="padding:2px 0;cursor:pointer;text-align:center;font-size:12px;color:var(--primary)" onclick="m3uToggleFold('+i+')">+'+foldCount+' 条 <span style="font-size:10px">▼</span></div>':''}
+     ${showUnfold?'<div style="padding:2px 0;cursor:pointer;text-align:center;font-size:12px;color:var(--text-secondary)" onclick="m3uToggleFold('+i+')"><span style="font-size:10px">▲</span> 折叠</div>':''}
+    </div>
+   </td>
+
+   <!-- 4. 频道分组 -->
+   <td id="m3uGrpTd${i}" style="vertical-align:top;padding-top:8px">${m3uRenderGroupCell(i,e)}</td>
+
+   <!-- 5. tvg-id -->
+   <td style="vertical-align:top;padding-top:8px"><input class="m3u-tvgid" value="${escapeHtml(e.tvg_id||'')}" style="width:100%;border:none;background:transparent" onblur="m3uEditField(${i},'tvg_id',this.value);renderM3uTable(currentM3uEntries,_m3uOptions)"></td>
+
+   <!-- 6. tvg-name -->
+   <td style="vertical-align:top;padding-top:8px;position:relative">
+     <input class="m3u-tvgname" value="${escapeHtml(e.tvg_name||'')}" style="width:100%;min-width:100px;border:none;background:${e._epg_matched ? '#f6ffed' : 'transparent'};padding-right:18px" onblur="m3uEditField(${i},'tvg_name',this.value);e._epg_matched=false;renderM3uTable(currentM3uEntries,_m3uOptions)">
+     ${e._epg_matched ? '<span style="position:absolute;right:4px;top:12px;font-size:10px;color:#52c41a" title="自动匹配成功">✅</span>' : ''}
+   </td>
+
+   <!-- 7. 匹配节目单 -->
    <td style="vertical-align:top;padding-top:8px"><select class="m3u-match" onchange="var sel=this.options[this.selectedIndex];var sid=sel.dataset.id,sname=sel.value;m3uEditField(${i},'tvg_id',sid);if(sid==='9999'){var disp=e.display_name||e.tvg_name||'';m3uEditField(${i},'tvg_name',disp);var tr=this.closest('tr');if(tr){var ni=tr.querySelector('td .m3u-tvgname');if(ni)ni.value=disp}}else{m3uEditField(${i},'tvg_name',sname);var tr=this.closest('tr');if(tr){var ni=tr.querySelector('td .m3u-tvgname');if(ni)ni.value=sname}};var tr=this.closest('tr');if(tr){var ti=tr.querySelector('td .m3u-tvgid');if(ti)ti.value=sid};renderM3uTable(currentM3uEntries,_m3uOptions);this.dataset.currentTvgId=sid" style="width:100%" data-current-tvg-id="${escapeHtml(e.tvg_id||'')}">
     <option value="暂无节目单" data-id="9999">🚫 暂无节目单</option>
     ${opts.filter(o=>o.tvg_name!=='暂无节目单').map(o=>'<option value="'+escapeHtml(o.tvg_name)+'" data-id="'+escapeHtml(o.tvg_id)+'" '+(o.tvg_id===e.tvg_id?'selected':'')+'>'+escapeHtml(o.tvg_name)+'</option>').join('')}
    </select></td>
+
+   <!-- 8. 频道图标 -->
+   <td id="m3uIcoTd${i}" style="vertical-align:top;padding-top:8px">${m3uRenderIconCell(i,e)}</td>
+
+   <!-- 9. 操作 -->
    <td style="vertical-align:top;text-align:center;white-space:nowrap;padding-top:8px">
     ${document.getElementById('m3uMergeCheck')&&document.getElementById('m3uMergeCheck').checked?'<button class="btn btn-sm" onclick="m3uAddUrl('+i+')" style="padding:2px 6px;font-size:11px;margin-right:2px" title="添加URL">+</button>':''}
+    <button class="btn btn-sm" onclick="m3uCopyEntry(${i})" style="padding:2px 6px;font-size:11px" title="复制该条 M3U">📋</button>
     <button class="btn btn-sm btn-danger" onclick="m3uDeleteEntry(${i})" style="padding:2px 6px;font-size:11px">✕</button>
    </td>
   </tr>`
  }).join('')
- applyTableColumnOrder($('m3uEditTable'))   // 列顺序（拖动保存过）立即生效，避免闪一下
+
+ applyTableColumnOrder($('m3uEditTable'))
  m3uSyncColumnVisibility()
+
+ // 表头全选框同步
+ const allBox = $('m3uAllBox')
+ if(allBox) allBox.checked = entries.length > 0 && entries.every((_,i)=>_m3uSel.has(i))
+
+ // 重新应用列宽
+ applyTableColWidths($('m3uEditTable'))
 }
-/* ==================== M3U 频道分组 / 频道图标列 ==================== */
+
+function m3uSelectOne(i, checked){
+  if(checked) _m3uSel.add(i); else _m3uSel.delete(i)
+  const box = $('m3uAllBox')
+  if(box && currentM3uEntries.length){
+    box.checked = currentM3uEntries.every((_,idx)=>_m3uSel.has(idx))
+  }
+}
+
+function m3uToggleAll(checked){
+  _m3uSel.clear()
+  if(checked){
+    currentM3uEntries.forEach((_,i)=>_m3uSel.add(i))
+  }
+  renderM3uTable(currentM3uEntries, _m3uOptions)
+}
+
+async function m3uBatchDelete(){
+  if(!_m3uSel.size){ showToast('请先勾选要删除的频道','error'); return }
+  if(!await customConfirm(`确定删除选中的 ${_m3uSel.size} 条频道？`)) return
+  const sel = new Set(_m3uSel)
+  currentM3uEntries = currentM3uEntries.filter((_,i)=>!sel.has(i))
+  _m3uSel.clear()
+  renderM3uTable(currentM3uEntries, _m3uOptions)
+  m3uSyncColumnVisibility()
+  autoSaveM3u()
+  showToast('已批量删除','success')
+}
+
+function m3uCopyEntry(i){
+  const e = currentM3uEntries[i]
+  if(!e) return
+  const attrs = []
+  if(e.tvg_id)      attrs.push(`tvg-id="${e.tvg_id}"`)
+  if(e.tvg_name)    attrs.push(`tvg-name="${e.tvg_name}"`)
+  if(e.tvg_logo)    attrs.push(`tvg-logo="${e.tvg_logo}"`)
+  if(e.group_title) attrs.push(`group-title="${e.group_title}"`)
+  const display = e.display_name || e.tvg_name || '未知'
+  const line = '#EXTINF:-1' + (attrs.length ? ' ' + attrs.join(' ') : '') + ',' + display
+  const urls = (e._urls && e._urls.length) ? e._urls : [e.url].filter(Boolean)
+  const text = line + '\n' + urls.join('\n')
+
+  const fallback = () => {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.cssText = 'position:fixed;opacity:0'
+    document.body.appendChild(ta); ta.select()
+    try{ document.execCommand('copy'); showToast('已复制该条 M3U','success') }
+    catch(err){ showToast('复制失败','error') }
+    document.body.removeChild(ta)
+  }
+  if(navigator.clipboard && window.isSecureContext){
+    navigator.clipboard.writeText(text).then(
+      ()=>showToast('已复制该条 M3U','success'),
+      fallback
+    )
+  } else {
+    fallback()
+  }
+}
+
+function exportCleanM3u(name){
+  const url = '/api/m3u/' + encodeURIComponent(name) + '/export-clean'
+  window.open(url, '_blank')
+  showToast('开始下载纯净版 M3U（仅含有节目单的频道）','success')
+}
+
 function m3uShowGroupFlag(){
  const el=document.getElementById('m3uShowGroup')
  return !!el&&el.checked
@@ -2083,17 +2445,11 @@ function m3uSyncColumnVisibility(){
   const g=document.getElementById('m3uGrpTd'+i); if(g) g.style.display=sg?'':'none'
   const ic=document.getElementById('m3uIcoTd'+i); if(ic) ic.style.display=si?'':'none'
  })
- const urlW = 290 - (sg?130:0) - (si?130:0)
+ const urlW = "auto"
  const urlTh=document.getElementById('m3uThUrl')
- // ★ 用户手动拖过 URL 列宽就尊重保存值，否则按隐藏列自动算
- const storedW = (urlTh && urlTh.closest('table')) ? _colWidths[colKey(urlTh.closest('table'),urlTh)] : 0
- const effW = (storedW > 20) ? storedW : urlW
- if(urlTh){ urlTh.style.width=effW+'px' }
+ if(urlTh){ urlTh.style.width=urlW }
  const newUrlTd=document.getElementById('m3uNewUrlTd')
- if(newUrlTd){ newUrlTd.style.width=effW+'px' }
- ;(currentM3uEntries||[]).forEach((e,i)=>{
-  const urlCell=document.getElementById('m3uUrlTd'+i); if(urlCell){ urlCell.style.width=effW+'px' }
- })
+ if(newUrlTd){ newUrlTd.style.width=urlW }
 }
 
 let _m3uOpen={type:null, idx:-1}
@@ -2123,7 +2479,6 @@ function m3uToggleDropdown(type, idx, btnEl, ev){
  if(type==='group'){
   const groups=(typeof m3uGroupList==='function')?m3uGroupList():[]
   const cur=e?e.group_title||'':''
-  // ★ 修复：分组名用 jsArg 传入
   const rows=['<div onclick="m3uPickGroup('+idx+','+jsArg('')+')" style="padding:6px 10px;cursor:pointer;border-bottom:1px solid #eee'+(cur===''?';background:#f0f7ff;font-weight:600':'')+'">暂无分类</div>']
   groups.forEach(g=>{
    rows.push('<div style="display:flex;align-items:center;border-bottom:1px solid #eee">'+
@@ -2204,11 +2559,19 @@ function m3uDeleteGroup(i,g){
 
 function m3uRenderIconCell(i,e){
  const cur=e.tvg_logo||''
- const matched=m3uMatchIconName(cur)
- const disp=matched||(cur?'（自定义链接）':'')
+ // 👇 改成这样，兼容模糊提取 👇
+ let matched = ''
+ if (cur.includes('/api/download/') || cur.includes('/logo/')) {
+   const m = cur.match(/\/(?:api\/download|logo)\/([^/?#]+)$/)
+   if (m) matched = decodeURIComponent(m[1])
+ }
+ const disp=matched||(cur?'（外部链接）':'')
+ // 👆 替换结束 👆
+ const autoTag = e._icon_matched ? '<span style="font-size:10px;color:#52c41a;margin-left:4px">✅自动</span>' : '';
+ 
  return '<div style="display:flex;align-items:center;gap:4px;position:relative">'+
-  '<button onclick="m3uToggleDropdown(\'icon\','+i+',this,event)" title="选择台标" style="flex:1;min-width:0;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;background:#fff;cursor:pointer;text-align:left;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
-   (disp?escapeHtml(disp):'<span style="color:#999">无</span>')+'<span style="float:right;color:#999">▼</span>'+
+  '<button onclick="m3uToggleDropdown(\'icon\','+i+',this,event)" title="选择台标" style="flex:1;min-width:0;font-size:11px;border:1px solid var(--border);border-radius:4px;padding:3px 6px;background:'+(e._icon_matched?'#f6ffed':'#fff')+';cursor:pointer;text-align:left;box-sizing:border-box;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+
+   (disp?escapeHtml(disp):'<span style="color:#999">无</span>')+ autoTag +'<span style="float:right;color:#999">▼</span>'+
   '</button>'+
   '<button class="m3u-cell-btn" onclick="m3uNewIconPrompt('+i+')" title="新建/自定义台标 URL" style="flex-shrink:0;width:22px;height:22px;line-height:1;font-size:13px;padding:0;border:1px solid var(--border);border-radius:4px;background:transparent;cursor:pointer">➕</button>'+
  '</div>'
@@ -2260,7 +2623,7 @@ function showShareUpload(){
 
 function handleShareDrop(e){uploadMultipleShare(e.dataTransfer.files)}
 function handleShareFileSelect(e){uploadMultipleShare(e.target.files)}
-async function uploadMultipleShare(files){let ok=0;for(let i=0;i<files.length;i++){const f=files[i];try{const r=await new Promise(rs=>{const rd=new FileReader();rd.onload=()=>rs(rd.result);rd.readAsDataURL(f)});const r2=await fetch('/api/share/upload',{method:'POST',body:r.split(',')[1],headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name)}});if(!r2.ok){showToast('上传失败: HTTP '+r2.status,'error');continue};const d=await r2.json();if(d.success)ok++}catch(e){showToast('上传出错: '+e.message,'error')}}showToast('上传完成 '+ok+'/'+files.length+' 个','success');closeModal();loadShareFiles()}
+async function uploadMultipleShare(files){let ok=0;for(let i=0;i<files.length;i++){const f=files[i];try{const r=await new Promise(rs=>{const rd=new FileReader();rd.onload=()=>rs(rd.result);rd.readAsDataURL(f)});const r2=await fetch('/api/share/upload',{method:'POST',body:r.split(',')[1],headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name),'X-Base64':'1'}});if(!r2.ok){showToast('上传失败: HTTP '+r2.status,'error');continue};const d=await r2.json();if(d.success)ok++}catch(e){showToast('上传出错: '+e.message,'error')}}showToast('上传完成 '+ok+'/'+files.length+' 个','success');closeModal();loadShareFiles()}
 
 function copyShareLink(name){
  const encPath=name.split('/').map(encodeURIComponent).join('/')
@@ -2283,7 +2646,6 @@ async function deleteShareFile(name){
 
 let currentSharePath=''
 
-// ★ 修复：所有路径参数改用 jsArg
 async function loadShareFiles(path){
  if(path===undefined) path=currentSharePath||''
  currentSharePath=path||''
@@ -2361,7 +2723,6 @@ async function refreshIcons(){
   const grid=$('iconGrid')
   if(!grid) return;
   if(!files.length){grid.innerHTML='<div class="empty" style="grid-column:1/-1">暂无台标，点击上传</div>';return}
-  // ★ 修复：文件名和 url 用 jsArg 传入 onclick
   grid.innerHTML=files.map(f=>
    `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;text-align:center">
     <img src="${escapeHtml(f.url)}" style="max-width:80px;max-height:80px;display:block;margin:0 auto 8px;object-fit:contain">
@@ -2405,7 +2766,7 @@ function showIconUpload(){
 
 function handleIconDrop(e){uploadMultipleIcon(e.dataTransfer.files)}
 function handleIconFileSelect(e){uploadMultipleIcon(e.target.files)}
-async function uploadMultipleIcon(files){let ok=0;for(let i=0;i<files.length;i++){const f=files[i];try{const r=await new Promise(rs=>{const rd=new FileReader();rd.onload=()=>rs(rd.result);rd.readAsDataURL(f)});const r2=await fetch('/api/icons/upload',{method:'POST',body:r.split(',')[1],headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name)}});if(!r2.ok){showToast('上传失败: HTTP '+r2.status,'error');continue};const d=await r2.json();if(d.success)ok++}catch(e){showToast('上传出错: '+e.message,'error')}}showToast('上传完成 '+ok+'/'+files.length+' 个','success');closeModal();refreshIcons()}
+async function uploadMultipleIcon(files){let ok=0;for(let i=0;i<files.length;i++){const f=files[i];try{const r=await new Promise(rs=>{const rd=new FileReader();rd.onload=()=>rs(rd.result);rd.readAsDataURL(f)});const r2=await fetch('/api/icons/upload',{method:'POST',body:r.split(',')[1],headers:{'Content-Type':'application/octet-stream','X-Filename':encodeURIComponent(f.name),'X-Base64':'1'}});if(!r2.ok){showToast('上传失败: HTTP '+r2.status,'error');continue};const d=await r2.json();if(d.success)ok++}catch(e){showToast('上传出错: '+e.message,'error')}}showToast('上传完成 '+ok+'/'+files.length+' 个','success');closeModal();refreshIcons()}
 async function deleteIcon(name){
  if(!await customConfirm('确定删除 '+name+'？'))return
  const r=await fetch('/api/icons/'+encodeURIComponent(name),{method:'DELETE'})
@@ -2451,14 +2812,27 @@ let epgSourcePage=1
 const EPG_SOURCE_PAGE_SIZE=5
 
 async function refreshGlobalLogs(){
- const r=await fetch('/api/logs/global?category='+encodeURIComponent(logCurrentCategory)+'&limit=300')
- const d=await r.json()
- const entries=d.entries||[]
- const cats=d.categories||[]
- const sorted=entries.slice().reverse()
- const txt=sorted.map(e=>e.line||('['+e.timestamp+'] '+e.message)).join('\n')||'= 暂无日志 ='
- const dash=$('dashLogContent');if(dash){dash.textContent=txt;dash.scrollTop=dash.scrollHeight}
- const dashInfo=$('dashLogCountInfo');if(dashInfo)dashInfo.textContent='显示 '+entries.length+' 条'
+  const r = await fetch('/api/logs/global?category='+encodeURIComponent(logCurrentCategory)+'&limit=300')
+  const d = await r.json()
+  const entries = d.entries||[]
+  const sorted = entries.slice().reverse()
+  const txt = sorted.map(e=>e.line||('['+e.timestamp+'] '+e.message)).join('\n')||'= 暂无日志 ='
+  const dash = $('dashLogContent'); if(dash){dash.textContent=txt;dash.scrollTop=dash.scrollHeight}
+  const dashInfo = $('dashLogCountInfo'); if(dashInfo) dashInfo.textContent='显示 '+entries.length+' 条'
+
+  try{
+    const lr = await fetch('/api/logs')
+    const ld = await lr.json()
+    const files = ld.logs || []
+    const box = $('dashLogFileList')
+    if(box){
+      box.innerHTML = files.length
+        ? files.map(f=>`<a href="/api/logs/${encodeURIComponent(f.date)}/download" 
+            style="font-size:12px;margin-right:8px;color:var(--primary)" 
+            title="${(f.size/1024).toFixed(1)} KB">${escapeHtml(f.date)}</a>`).join('')
+        : '<span style="font-size:12px;color:var(--text-secondary)">暂无日志文件</span>'
+    }
+  }catch(e){}
 }
 
 function switchLogCategory(cat){
@@ -2489,7 +2863,7 @@ async function doLogin(){
   if(d.success){
     $('loginOverlay').classList.add('hidden')
     $('loginLoading').style.display='none'
-    location.reload(); // ★ 修改这里：直接刷新页面
+    location.reload();
   }
   else{$('loginError').textContent='用户名或密码错误';$('loginError').style.display='block';$('loginLoading').style.display='none'}
  }catch(e){$('loginError').textContent='连接失败';$('loginError').style.display='block';$('loginLoading').style.display='none'}
@@ -2527,10 +2901,9 @@ function closeModal(){
   const m = $('modal');
   if (!m) return;
   m.classList.remove('active');
-  m.style.zIndex = '';     // ★ 顺手重置
+  m.style.zIndex = '';
 }
 
-/* ==================== 电信快捷入口 ==================== */
 function jumpToTelecom(){
   const tab = document.querySelector('.tab[data-tab="telecom"]');
   if (tab) tab.click();
@@ -2541,21 +2914,17 @@ async function refreshTelecomStatus(){
   try {
     const r = await fetch('/api/telecom/status');
     const d = await r.json();
-    let html;
+    const pLabel = d.active_label || d.platform_label || '电信平台';
+    let html = '<span style="font-weight:600">[' + escapeHtml(pLabel) + ']</span> · ';
     if (!d.configured || d.config_error){
-      html = '<span style="color:var(--danger)">❌ ' + escapeHtml(d.config_error || '未配置（缺 UserID / mac / STBID）') + '</span>';
+      html += '<span style="color:var(--danger)">❌ ' + escapeHtml(d.config_error || '未配置（缺少账号/设备信息）') + '</span>';
     } else {
-      let cache = '';
-      try{
-        const cd = await (await fetch('/api/telecom/cached-channels')).json();
-        cache = ' · 已缓存 <b>' + (cd.count||0) + '</b> 个频道' + (cd.updated ? '（' + escapeHtml(cd.updated) + '）' : '');
-      }catch(e){}
-      // 「启用」只控制定时任务；手动按钮（认证/获取频道/下载EPG）任何时候都能用
-      html = '<span style="color:var(--success)">✅ 已配置</span> · '
+      html += '<span style="color:var(--success)">✅ 已配置</span> · '
         + (d.enabled
             ? '<span style="color:var(--success)">定时任务已启用</span>'
             : '<span style="color:var(--text-secondary)" title="只影响定时任务，手动按钮不受影响">定时任务未启用（手动按钮照常可用）</span>')
-        + cache;
+        + ' · 已缓存 <b>' + (d.channels || 0) + '</b> 个频道'
+        + (d.updated ? '（' + escapeHtml(d.updated) + '）' : '');
     }
     if (el) el.innerHTML = html;
   } catch(e) {
@@ -2565,10 +2934,11 @@ async function refreshTelecomStatus(){
 
 async function telecomRunEpgOnly(){
   try {
-    showToast('正在启动电信EPG任务...', 'success');
-    const r = await fetch('/api/telecom/download-all-epg', {
+    const isZte = (window.TC_ACTIVE_PLATFORM === 'zte');
+    showToast('正在启动' + (isZte ? '中兴' : '华为') + 'EPG任务...', 'success');
+    const r = await fetch(isZte ? '/api/zte/download-all-epg' : '/api/telecom/download-all-epg', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({config:{}, days:3})
+      body: JSON.stringify({config:{}, days:isZte ? 8 : 3})
     });
     const d = await r.json();
     if (!d.success) { showToast('启动失败: ' + (d.message||''), 'error'); return; }
@@ -2580,7 +2950,6 @@ async function telecomRunEpgOnly(){
   } catch(e) { showToast('失败: ' + e.message, 'error'); }
 }
 
-/* ==================== M3U 合并 ==================== */
 async function showMergeM3u(){
   const r = await fetch('/api/m3u');
   const d = await r.json();
@@ -2603,18 +2972,12 @@ async function showMergeM3u(){
         <option value="url">按(频道名 + URL)去重（推荐）</option>
         <option value="channel">按频道名去重（多URL合并）</option>
       </select>
-      <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-        💡 通用规则：URL 相同但名字不同的只保留一条（先出现的名字优先，并自动补全缺失字段）
-      </div>
     </div>
     <div class="form-group">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
         <input type="checkbox" id="mergeKeepOrder" checked style="width:auto">
         <span>保持第一个文件的频道顺序（其它文件的新频道追加到末尾）</span>
       </label>
-      <div style="font-size:11px;color:var(--text-secondary);margin-top:4px">
-        💡 勾选后不按分组/名称重排；把「电信」文件放第一个即为「以电信为主」
-      </div>
     </div>
     <div class="form-group"><label style="display:flex;justify-content:space-between">
       <span>分组设置（可选，按频道名匹配）</span>
@@ -2794,7 +3157,6 @@ async function confirmMergeM3u(){
   } catch(e) { showToast('合并失败: ' + e.message, 'error'); }
 }
 
-/* ==================== M3U 常驻配置卡片 ==================== */
 function toggleM3uConfigPanel(){
   const body = $('m3uConfigBody');
   const arrow = $('m3uConfigArrow');
@@ -2881,7 +3243,6 @@ document.addEventListener('DOMContentLoaded', function(){
   });
 });
 
-/* ==================== 分组规则 ==================== */
 let _groupRules = { version: 1, rules: [], default_group: "", auto_apply: false };
 
 async function loadGroupRules() {
@@ -2974,7 +3335,6 @@ async function saveGroupRules() {
   }
 }
 
-// ==================== 频道总览 ====================
 let ovRows = []
 let ovLabel = ''
 
@@ -2991,9 +3351,9 @@ async function loadOverviewSources(){
   const r=await fetch('/api/m3u'); const d=await r.json()
   files=(d.files||[]).map(f=>f.name)
  }catch(e){ ok=false }
- if(!ok) return   // 拉不到文件列表就别重建下拉，免得把当前来源冲掉
+ if(!ok) return
  const cur=sel.value
- sel.innerHTML='<option value="telecom">📡 电信频道（直播 + 回看）</option>'+
+ sel.innerHTML='<option value="telecom">📡 当前电信平台频道（直播 + 回看）</option>'+
   files.map(n=>'<option value="m3u:'+escapeHtml(n)+'">📄 '+escapeHtml(n)+'</option>').join('')
  if(cur) sel.value=cur
 }
@@ -3001,7 +3361,6 @@ async function loadOverviewSources(){
 async function loadOverview(opts){
  const force=!!(opts&&opts.force)
  const sel=$('ovSource'); if(!sel) return null
- // force：连「来源下拉」一起重建，刚上传/合并的 M3U 文件能立刻出现在列表里
  if(force||!sel.options.length) await loadOverviewSources()
  const src=sel.value||'telecom'
  try{
@@ -3015,7 +3374,6 @@ async function loadOverview(opts){
  }catch(e){ showToast('加载失败: '+ovErrMsg(e),'error'); return null }
 }
 
-// 「🔄 刷新」：重新读来源下拉 + 重新拉数据，并给出可见反馈
 async function refreshOverview(btn){
  if(btn){ btn.disabled=true; btn.textContent='⏳ 刷新中...' }
  const n=await loadOverview({force:true})
@@ -3025,7 +3383,6 @@ async function refreshOverview(btn){
  showToast('已刷新：'+n+' 个频道 · '+t,'success')
 }
 
-// 「只看有回看」：勾选/取消都给出明确反馈，避免“数据本来就全有回看”时看着像没反应
 function onOvOnlyCatchupChange(){
  const r=renderOverview()
  if(!r) return
@@ -3080,7 +3437,6 @@ function renderOverview(){
   </tr>`
  }).join('')
  
-  // ★ 新增这两行：在每次渲染完数据后，立刻重新应用列顺序和列宽
  applyTableColumnOrder($('ovTable'))
  applyTableColWidths($('ovTable'))
  return {shown:rows.length}
@@ -3117,7 +3473,91 @@ function exportOverviewCsv(){
  showToast('已导出 CSV','success')
 }
 
-// ==================== 初始化 ====================
+async function showEpgPivot() {
+  showToast('正在统计今日节目单数据...', 'info');
+  try {
+    const r = await fetch('/api/epg/pivot');
+    const d = await r.json();
+    const rows = d.data || [];
+    
+    let html = `<div style="max-height:60vh;overflow:auto"><table class="table" style="width:100%">
+      <thead><tr><th>频道名</th><th>TVG-ID</th><th>数据来源</th><th>节目数量</th></tr></thead>
+      <tbody>`;
+      
+    rows.forEach(x => {
+      let badge = 'badge-danger';
+      if (x.source === '电信源') badge = 'badge-success';
+      else if (x.source === '外部源') badge = 'badge-warning';
+      else if (x.source === '空数据(占位)') badge = 'badge-secondary';
+      
+      html += `<tr>
+        <td>${escapeHtml(x.name)}</td>
+        <td>${escapeHtml(x.tvg_id)}</td>
+        <td><span class="badge ${badge}">${x.source}</span></td>
+        <td style="text-align:center;font-weight:bold;color:${x.count>0?'#52c41a':'#ff4d4f'}">${x.count}</td>
+      </tr>`;
+    });
+    
+    if (!rows.length) html += '<tr><td colspan="4" style="text-align:center">暂无数据</td></tr>';
+    html += '</tbody></table></div>';
+    
+    $('modalTitle').textContent = `📊 EPG 数据透视 (${d.date})`;
+    $('modalBody').innerHTML = html;
+    $('modalActions').innerHTML = `<button class="btn" onclick="closeModal()">关闭</button>`;
+    $('modal').classList.add('active');
+  } catch(e) {
+    showToast('获取透视数据失败: ' + e.message, 'error');
+  }
+}
+
+// 勾选全选
+function toggleAllEpgCh(checked) {
+  const boxes = document.querySelectorAll('.epg-ch-cb');
+  boxes.forEach(b => b.checked = checked);
+}
+
+// 收集选中的 Logic ID
+function getSelectedEpgChIds() {
+  const boxes = document.querySelectorAll('.epg-ch-cb:checked');
+  return Array.from(boxes).map(b => b.getAttribute('data-lid'));
+}
+
+async function batchDeleteEpgCh() {
+  const targets = getSelectedEpgChIds();
+  if (!targets.length) return showToast('请先勾选要删除的频道', 'error');
+  if (!await customConfirm(`确定要批量删除选中的 ${targets.length} 个频道吗？\n（同步删除关联的提取记录）`)) return;
+  
+  try {
+    const r = await fetch('/api/epg-channels/batch-delete', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ targets })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast(`已删除 ${d.count} 个频道`, 'success');
+      await loadEpgChannels();
+      if (document.getElementById('epgChSelectAll')) document.getElementById('epgChSelectAll').checked = false;
+    }
+  } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
+}
+
+async function batchToggleEpgCh(enabled) {
+  const targets = getSelectedEpgChIds();
+  if (!targets.length) return showToast('请先勾选要操作的频道', 'error');
+  
+  try {
+    const r = await fetch('/api/epg-channels/batch-toggle', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ targets, enabled })
+    });
+    const d = await r.json();
+    if (d.success) {
+      showToast(`已${enabled?'启用':'禁用'} ${d.count} 个频道`, 'success');
+      await loadEpgChannels();
+    }
+  } catch(e) { showToast('操作失败: ' + e.message, 'error'); }
+}
+
 async function init(){
  const authed=await checkAuth();if(!authed)return
  await refreshStatus()
@@ -3129,13 +3569,11 @@ async function init(){
  renderM3uFiles()
  const m3uFile=localStorage.getItem('m3u_editing')
  if(m3uFile) setTimeout(()=>editM3uFile(m3uFile),500)
- // ★ 原来这里调用的是未定义的 loadLogs()：一抛 ReferenceError，init 后面全都不执行
- //   （保存的页签不恢复、定时任务表单不回填、总览页打开是空的）
  refreshGlobalLogs().catch(()=>{})
  try{ loadColumnOrder() }catch(e){}
  try{ loadColumnWidths() }catch(e){}
  let savedTab=localStorage.getItem('iptv_active_tab')
- if(savedTab==='channels') savedTab='dashboard'   // 「频道管理」已隐藏
+ if(savedTab==='channels') savedTab='dashboard'
  try{
   if(savedTab&&savedTab!=='dashboard'){
    const tab=document.querySelector('.tab[data-tab="'+savedTab+'"]')
@@ -3158,14 +3596,15 @@ async function init(){
  }catch(e){ console.error('恢复上次页签失败:',e) }
  loadCronSettings();
  
- // 「合并工具配置」默认收起（避免占屏，需要时点标题展开）
  if($('m3uConfigBody')) $('m3uConfigBody').style.display='none'
  if($('m3uConfigArrow')) $('m3uConfigArrow').textContent='▼ 展开'
 
+ if(window.loadTelecomPlatform) loadTelecomPlatform();
  refreshTelecomStatus();
  if(window.loadTelecomSchedule) loadTelecomSchedule();
  if(window.refreshTelecomLog) refreshTelecomLog();
+ 
+ pollEpgFailures()
 }
-
 
 init()
