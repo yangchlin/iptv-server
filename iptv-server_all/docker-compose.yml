@@ -1,0 +1,63 @@
+# ============================================================================
+# iptv-server · docker compose
+# 通用版本：群晖 DSM(Container Manager) / 飞牛 fnOS / 威联通 / 任意 Linux
+#
+# 用法：
+#   cp .env.example .env        # 可选，改端口 / 密码 / 数据目录
+#   docker compose up -d --build
+#   docker compose logs -f
+#
+# 数据默认落在本文件同级的 ./data 目录，所以不用改任何路径就能在
+# 任意机器上跑；想放到 NAS 的固定位置就在 .env 里改 DATA_ROOT。
+# ============================================================================
+# 保留 version 是为了兼容老版 docker-compose（群晖 DSM 7.0）；
+# 新版 docker compose 会提示该字段已过时，可忽略。
+version: "3.8"
+
+services:
+  iptv-allserver:
+    build:
+      context: .
+      args:
+        # 国内默认；海外可改成 deb.debian.org / pypi.org
+        APT_MIRROR: ${APT_MIRROR:-mirrors.aliyun.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-pypi.tuna.tsinghua.edu.cn}
+    image: iptv-allserver:latest
+    container_name: ${CONTAINER_NAME:-iptv-server}
+    restart: unless-stopped
+    # 给 nginx / uvicorn 留出优雅退出的时间（代码里有 trap）
+    stop_grace_period: 30s
+    ports:
+      - "${WEB_PORT:-5673}:80"
+      # 中兴平台内置 RTSP 回看代理（默认关闭）。不用中兴回看时保持注释，避免宿主机
+      # 554 端口被占用导致容器起不来；需要时取消下面一行注释，并在页面
+      # 「电信EPG → 中兴平台」里启用代理（容器内监听端口保持 554）。
+      # - "${RTSP_PROXY_PORT:-554}:554"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PYTHONUNBUFFERED: "1"
+      AUTH_USERNAME: ${AUTH_USERNAME:-666}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-666}
+    volumes:
+      # 运行数据：json / xml / m3u / icons / logs / 配置
+      - ${DATA_ROOT:-./data}/json:/app/data/json
+      - ${DATA_ROOT:-./data}/xml:/app/data/xml
+      - ${DATA_ROOT:-./data}/m3u:/app/data/m3u
+      - ${DATA_ROOT:-./data}/icons:/app/data/icons
+      - ${DATA_ROOT:-./data}/logs:/app/data/logs
+      - ${DATA_ROOT:-./data}/config:/app/data/config
+      # “共享目录”：生成 epg.xml 时额外备份一份（对应设置页的共享目录路径）
+      - ${SHARE_DIR:-./data/share}:/app/data/share
+      # 外部工具（IPTV.exe 等）：换版本直接替换文件，不用重建镜像
+      - ${TOOLS_DIR:-./data/tools}:/app/data/tools
+    logging:
+      # 限制日志体积，避免长期运行把 NAS 磁盘写满
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 内网 DNS，解析不了外网 EPG 域名时可改；不需要可整段删掉
+    dns:
+      - ${DNS1:-223.5.5.5}
+      - ${DNS2:-119.29.29.29}
