@@ -433,7 +433,6 @@ def merge_telecom_channels_into_epg(telecom_channels: list) -> dict:
             continue
 
         tvg_id = str(ch.get("tvg_id", "") or name).strip()
-        suffix = 2
         # 如果 tvg_id 冲突，就在英文后面加后缀
         suffix = 2
         base_tvg_id = tvg_id
@@ -449,7 +448,7 @@ def merge_telecom_channels_into_epg(telecom_channels: list) -> dict:
             "enabled": True,
             "sort_order": len(epg_channels),
             "source_type": "telecom",
-            "source_remark": "自动来自电信频道列表",
+            "source_remark": "电信源",
         })
         names.add(name)
         tvg_ids.add(tvg_id)

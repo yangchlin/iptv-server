@@ -21,12 +21,11 @@
   --border:#f0f0f0;
   --border-dark:#d9d9d9;
   --hover:#fafafa;
-  --sidebar-w:140px; /* 侧边栏宽度缩减到 140px */
+  --sidebar-w:140px;
   --radius:8px;
   --shadow: 0 1px 2px -2px rgba(0,0,0,.08), 0 3px 6px 0 rgba(0,0,0,.06), 0 5px 12px 4px rgba(0,0,0,.04);
 }
 
-/* 全局字体与滚动条 */
 body{
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;
@@ -39,7 +38,6 @@ body{
 
 .container{max-width:1600px;margin:0 auto;padding:16px 24px}
 
-/* 顶部 Header */
 .header{
   background:linear-gradient(135deg,#1f2937,#111827);
   color:#fff;padding:16px 24px;border-radius:var(--radius);
@@ -51,7 +49,6 @@ body{
 
 .main-layout{display:flex;gap:16px;min-height:calc(100vh - 120px);overflow:hidden;max-width:100%}
 
-/* 侧边栏 */
 .tabs{
   display:flex;flex-direction:column;gap:4px;
   min-width:var(--sidebar-w);max-width:var(--sidebar-w);flex-shrink:0;
@@ -65,14 +62,12 @@ body{
 .tab:hover{background:var(--hover);color:var(--primary)}
 .tab.active{background:#e6f4ff;color:var(--primary);font-weight:600}
 
-/* 面板卡片 */
 .panel{
   display:none;background:var(--card);border-radius:var(--radius);
   padding:24px;flex:1;min-width:0;overflow:auto;box-shadow:var(--shadow);
 }
 .panel.active{display:block;min-width:0}
 
-/* 按钮 */
 .btn{
   display:inline-flex;align-items:center;gap:6px;padding:6px 16px;
   border:1px solid var(--border-dark);border-radius:6px;cursor:pointer;font-size:13px;
@@ -94,7 +89,6 @@ body{
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;align-items:center}
 .toolbar .spacer{flex:1}
 
-/* 表单控件 */
 input,select,textarea{
   padding:8px 12px;border:1px solid var(--border-dark);border-radius:6px;
   font-size:13px;outline:none;transition:all .2s;width:100%;background:#fff;color:var(--text);
@@ -108,9 +102,9 @@ textarea{resize:vertical;min-height:60px;font-family:monospace}
 .form-row{display:flex;gap:12px;flex-wrap:wrap}
 .form-row>*{flex:1;min-width:120px}
 
-/* ================== 表格视觉与编辑体验优化 ================== */
+/* ================== 终极表格布局 ================== */
 table {
-    width: 100%;
+    width: 100%; 
     border-collapse: separate;
     border-spacing: 0;
     border: 1px solid #e1e4e8;
@@ -118,6 +112,7 @@ table {
     overflow: hidden;
     margin: 16px 0;
     background: #fff;
+    table-layout: fixed;
 }
 th, td {
     padding: 12px 14px;
@@ -126,12 +121,13 @@ th, td {
     border-bottom: 1px solid #f0f0f0;
     border-right: 1px solid #f0f0f0;
     vertical-align: middle;
+    word-break: break-all !important;
+    white-space: normal !important;
 }
 th {
     background: #f8f9fb;
     font-weight: 600;
     color: #333;
-    white-space: nowrap;
     position: relative;
     border-bottom: 2px solid #e1e4e8;
 }
@@ -140,7 +136,7 @@ tbody tr:last-child td { border-bottom: none; }
 tbody tr:nth-child(even) td { background: #fcfcfc; }
 tbody tr:hover td { background: #f0f7ff; transition: background 0.2s; }
 
-/* 强行覆盖表格内联的透明输入框（解决编辑时看起来乱糟糟的问题） */
+/* 强行覆盖表格内联的透明输入框 */
 td input[type="text"], td input:not([type]), td select {
     width: 100% !important;
     padding: 6px 10px !important;
@@ -149,12 +145,9 @@ td input[type="text"], td input:not([type]), td select {
     border-radius: 4px !important;
     font-size: 13px !important;
     color: #1f1f1f !important;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.02) inset !important;
-    transition: all 0.2s !important;
     box-sizing: border-box !important;
 }
-td input[style*="border:none"], td input[style*="border: none"],
-td input[style*="background:transparent"], td input[style*="background: transparent"] {
+td input[style*="border:none"], td input[style*="background:transparent"] {
     border: 1px solid #d9d9d9 !important;
     background: #fff !important;
 }
@@ -164,13 +157,88 @@ td input:focus, td select:focus {
     outline: none !important;
 }
 
-/* 表格里的操作按钮间距 */
 td .btn, td button { margin: 0 3px; }
 td .btn:first-child, td button:first-child { margin-left: 0; }
 td .btn:last-child, td button:last-child { margin-right: 0; }
 
-/* 固定表头 */
-#m3uEditTable thead th, #epgChTable thead th, #ovTable thead th, #epgExtractTable thead th, #epgPickTable thead th, #tcChannelTable thead th, #epgSourceTable thead th{position:sticky;top:0;background:#f8f9fb;z-index:2}
+/* ★ 核心：给各表格设定合理的最小宽度和固定列宽 */
+#epgSourceTable { min-width: 1068px; }
+#epgSourceTable th:nth-child(1) { width: 40px; }
+#epgSourceTable th:nth-child(2) { width: 268px; }
+#epgSourceTable th:nth-child(3) { width: 155px; }
+#epgSourceTable th:nth-child(4) { width: 110px; }
+#epgSourceTable th:nth-child(5) { width: 130px; }
+#epgSourceTable th:nth-child(6) { width: 110px; }
+#epgSourceTable th:nth-child(7) { width: 95px; }
+#epgSourceTable th:nth-child(8) { width: 160px; }
+
+#tcChannelTable { min-width: 850px; }
+#tcChannelTable th:nth-child(1) { width: 130px; }
+#tcChannelTable th:nth-child(2) { width: 120px; }
+#tcChannelTable th:nth-child(3) { width: 180px; }
+#tcChannelTable th:nth-child(4) { width: auto; }
+#tcChannelTable th:nth-child(5) { width: 90px; }
+
+#ovTable { min-width: 1200px; }
+#ovTable th:nth-child(1) { width: 140px; }
+#ovTable th:nth-child(2) { width: 120px; }
+#ovTable th:nth-child(3) { width: 150px; }
+#ovTable th:nth-child(4) { width: 220px; }
+#ovTable th:nth-child(5) { width: 220px; }
+#ovTable th:nth-child(6) { width: 100px; }
+#ovTable th:nth-child(7) { width: 140px; }
+#ovTable th:nth-child(8) { width: 110px; }
+
+#epgChTable { min-width: 960px; }
+#epgChTable th:nth-child(1) { width: 40px; }   /* 勾选 */
+#epgChTable th:nth-child(2) { width: 40px; }   /* ☰ */
+#epgChTable th:nth-child(3) { width: 160px; }  /* 频道名 */
+#epgChTable th:nth-child(4) { width: 120px; }  /* TVG-ID */
+#epgChTable th:nth-child(5) { width: 200px; }  /* TVG-NAME */
+#epgChTable th:nth-child(6) { width: auto; }   /* 来源 */
+#epgChTable th:nth-child(7) { width: 80px; }   /* 状态 */
+#epgChTable th:nth-child(8) { width: 100px; }  /* 操作 */
+
+#m3uEditTable { min-width: 1040px; }
+#m3uEditTable th:nth-child(1) { width: 32px; }   /* 勾选 */
+#m3uEditTable th:nth-child(2) { width: 40px; }   /* ☰ */
+#m3uEditTable th:nth-child(3) { width: 15%; }    /* 频道名 */
+#m3uEditTable th:nth-child(4) { width: auto; }   /* URL */
+#m3uEditTable th:nth-child(5) { width: 10%; }    /* 分组 */
+#m3uEditTable th:nth-child(6) { width: 10%; }    /* tvg-id */
+#m3uEditTable th:nth-child(7) { width: 15%; }    /* tvg-name */
+#m3uEditTable th:nth-child(8) { width: 12%; }    /* 匹配 */
+#m3uEditTable th:nth-child(9) { width: 10%; }    /* 图标 */
+#m3uEditTable th:nth-child(10) { width: 120px; } /* 操作 */
+
+#epgExtractTable { min-width: 860px; }
+#epgExtractTable th:nth-child(1) { width: 40px; }
+#epgExtractTable th:nth-child(2) { width: 160px; }
+#epgExtractTable th:nth-child(3) { width: 100px; }
+#epgExtractTable th:nth-child(4) { width: auto; }
+#epgExtractTable th:nth-child(5) { width: 60px; }
+#epgExtractTable th:nth-child(6) { width: 100px; }
+
+#epgPickTable { min-width: 820px; }
+#epgPickTable th:nth-child(1) { width: 40px; }
+#epgPickTable th:nth-child(2) { width: 150px; }
+#epgPickTable th:nth-child(3) { width: auto; }
+#epgPickTable th:nth-child(4) { width: 130px; }
+#epgPickTable th:nth-child(5) { width: 160px; }
+#epgPickTable th:nth-child(6) { width: 80px; }
+
+#m3uFileTable { min-width: 700px; }
+#m3uFileTable th:nth-child(1) { width: 100px; }
+#m3uFileTable th:nth-child(2) { width: 80px; }
+#m3uFileTable th:nth-child(3) { width: 100px; }
+#m3uFileTable th:nth-child(4) { width: 160px; }
+#m3uFileTable th:nth-child(5) { width: 220px; }
+
+#shareFileTable { min-width: 600px; }
+#shareFileTable th:nth-child(1) { width: auto; }
+#shareFileTable th:nth-child(2) { width: 100px; }
+#shareFileTable th:nth-child(3) { width: 160px; }
+#shareFileTable th:nth-child(4) { width: 120px; }
 
 /* 拖拽调整列宽/列顺序样式 */
 th .resize-handle{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:10}
@@ -187,39 +255,34 @@ tr.drag-over td{background:#fffbe6 !important;box-shadow:inset 0 2px 0 var(--war
 tr.drag-src td:first-child,tr.drag-over td:first-child{cursor:grabbing}
 body.row-dragging{cursor:grabbing;user-select:none}
 
-/* 徽章 */
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:500}
 .badge-success{background:#f6ffed;color:#389e0d;border:1px solid #b7eb8f}
 .badge-danger{background:#fff2f0;color:#cf1322;border:1px solid #ffccc7}
 
-/* 其他组件 */
 .xml-link{display:flex;gap:8px;align-items:center;padding:12px 16px;background:#f0f5ff;border:1px solid #adc6ff;border-radius:var(--radius);margin-bottom:16px}
 .xml-link input{flex:1;border:none;background:transparent;font-family:monospace;font-size:13px;padding:0}
 .xml-link input:focus{box-shadow:none}
 .empty{text-align:center;padding:40px;color:var(--text-secondary);font-size:14px}
 
-/* 翻页 */
 .pagination{display:flex;gap:6px;align-items:center;margin-top:16px;flex-wrap:wrap}
 .pagination button{padding:4px 12px;border:1px solid var(--border-dark);border-radius:6px;background:#fff;cursor:pointer;font-size:13px;transition:all 0.2s}
 .pagination button:hover:not(:disabled){border-color:var(--primary);color:var(--primary)}
 .pagination button.active{background:var(--primary);color:#fff;border-color:var(--primary)}
 .pagination button:disabled{opacity:.5;cursor:not-allowed;background:#f5f5f5}
 
-/* 模态框 */
+/* 模态框（★ 之前丢失的核心样式） */
 .modal{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);backdrop-filter:blur(4px);z-index:9999;justify-content:center;align-items:center}
 .modal.active{display:flex}
 .modal-content{background:var(--card);border-radius:12px;padding:24px;max-width:800px;width:95%;max-height:85vh;overflow-y:auto;box-shadow:0 10px 30px rgba(0,0,0,0.2)}
 .modal-title{font-size:18px;font-weight:600;margin-bottom:20px;color:var(--text)}
 .modal-actions{display:flex;gap:12px;justify-content:flex-end;margin-top:24px}
 
-/* 上传拖拽区 */
 .dropzone{border:2px dashed var(--border-dark);border-radius:var(--radius);padding:40px 20px;text-align:center;cursor:pointer;transition:all .2s;margin-bottom:16px;background:#fafafa}
 .dropzone:hover,.dropzone.dragover{border-color:var(--primary);background:#f0f5ff}
 .dropzone .icon{font-size:40px;margin-bottom:12px}
 .dropzone .text{font-size:14px;color:var(--text)}
 .dropzone .hint{font-size:12px;color:var(--text-secondary);margin-top:6px}
 
-/* 进度条 */
 #globalProgress{display:block;margin-bottom:16px;padding:0;min-height:30px}
 #globalProgress .gp-bar-wrap{background:#f0f0f0;border-radius:6px;height:6px;overflow:hidden;position:relative}
 #globalProgress .gp-bar-fill{height:100%;background:linear-gradient(90deg,var(--primary),#69c0ff);border-radius:6px;transition:width .3s ease;width:0%}
@@ -230,7 +293,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 .config-block{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:20px;overflow:hidden;background:#fff}
 .config-block .block-header{padding:12px 20px;background:#fafafa;font-size:14px;font-weight:600;border-bottom:1px solid var(--border);color:var(--text)}
 
-/* 响应式 */
 @media(max-width:768px){
   .form-row>*{min-width:100%}
   .header h1{font-size:16px}
@@ -238,10 +300,10 @@ body.row-dragging{cursor:grabbing;user-select:none}
   .main-layout{flex-direction:column}
   .tabs{flex-direction:row;min-width:100%;max-width:100%;overflow-x:auto;gap:4px;padding:8px}
   .tab{font-size:13px;padding:8px 12px;white-space:nowrap;flex-shrink:0;border-radius:4px}
-  th,td{padding:8px 12px}
+  th,td{padding:8px 4px; font-size: 12px;}
+  .resize-handle { display: none !important; }
 }
 
-/* 登录遮罩 */
 #loginOverlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);backdrop-filter:blur(10px);z-index:99999;display:flex;justify-content:center;align-items:center}
 #loginOverlay.hidden{display:none}
 #loginBox{background:#ffffff;border-radius:16px;padding:40px;width:400px;max-width:90vw;box-shadow:0 20px 40px rgba(0,0,0,.2)}
@@ -262,7 +324,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 </head>
 <body>
 
-<!-- 登录遮罩 -->
 <div id="loginOverlay">
 <div id="loginBox">
 <div class="login-logo"><svg viewBox="0 0 24 24" fill="currentColor" style="color:#007AFF"><rect x="2" y="5" width="20" height="14" rx="3"/><path d="M10 9.5v5l4-2.5z" fill="#fff"/></svg></div>
@@ -287,11 +348,10 @@ body.row-dragging{cursor:grabbing;user-select:none}
   </div>
 </div>
 
-<!-- 全局进度条 -->
 <div id="globalProgress">
 <div class="gp-bar-wrap"><div class="gp-bar-fill" id="gpFill"></div></div>
 <div class="gp-info">
- <span><span class="gp-title" id="gpTitle" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block"></span></span>
+ <span><span class="gp-title" id="gpTitle" style="display:block"></span></span>
  <span class="gp-pct" id="gpPct">0%</span>
 </div>
 </div>
@@ -301,7 +361,7 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <div class="tab active" data-tab="dashboard">📊 仪表盘</div>
 <div class="tab" data-tab="telecom">📡 电信EPG</div>
 <div class="tab" data-tab="telecom_channels">📺 电信频道</div>
-<div class="tab" data-tab="epg">🌐 外部EPG</div>
+<div class="tab" data-tab="epg">🌐 外部EPG<span id="epgTabRedDot" style="display:none;color:#ff4d4f;margin-left:4px;font-size:10px;cursor:pointer" onclick="event.stopPropagation();showEpgFailures()">●</span></div>
 <div class="tab" data-tab="epgchannels">📋 EPG管理</div>
 <div class="tab" data-tab="m3u">📋 频道管理</div>
 <div class="tab" data-tab="overview">📇 频道总览</div>
@@ -326,8 +386,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <button class="btn" onclick="telecomGetChannels()">📺 获取频道列表</button>
 <button class="btn" onclick="telecomAllEpg()">📡 获取EPG信息</button>
 <button class="btn btn-success" onclick="telecomRunAll()">⚡ 一键获取频道+EPG</button>
-<button class="btn btn-primary" style="display:none" onclick="startDownload()">⬇️ 开始下载(今明后)</button>
-<button class="btn btn-warning" style="display:none" onclick="downloadHistory()">📅 下载过往(6天)</button>
 <button class="btn" style="background:#722ed1;color:#fff" onclick="extractEpgToJson()">🌐 外部EPG提取</button>
 <button class="btn btn-success" onclick="buildXml()">📄 生成XML</button>
 <button class="btn" style="background:#786fa6;color:#fff" onclick="manualCleanup()">🗑️ 清理过期</button>
@@ -348,7 +406,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 
 <div style="margin-top:16px">
 <h3 style="margin-bottom:8px">📝 系统日志</h3>
-<div style="margin-bottom:8px" id="dashLogCategories"></div>
 <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
  <span style="font-size:12px;color:var(--text-secondary)">分类筛选：</span>
  <button class="btn btn-sm" data-dashlogcat="下载" onclick="switchLogCategory('下载')">⬇️ 下载</button>
@@ -495,17 +552,15 @@ body.row-dragging{cursor:grabbing;user-select:none}
     </div>
   </div>
   
-  <div id="tcChHint" style="font-size:11px;color:var(--text-secondary);margin-bottom:6px"></div>
-
   <div style="overflow:auto;max-height:60vh;border:1px solid var(--border);border-radius:6px">
-    <table class="table" id="tcChannelTable" style="width:100%;min-width:900px;margin:0;table-layout:fixed">
+    <table class="table" id="tcChannelTable">
       <thead style="position:sticky;top:0;background:#fafafa;z-index:1">
         <tr>
-          <th style="width:130px">频道ID</th>
-          <th style="width:100px">频道名称</th>
-          <th style="width:150px">组播地址</th>
-          <th>RTSP回看地址</th>
-          <th style="width:80px;text-align:center" id="tcChOpTh">操作</th>
+          <th>频道ID<span class="resize-handle"></span></th>
+          <th>频道名称<span class="resize-handle"></span></th>
+          <th>组播地址<span class="resize-handle"></span></th>
+          <th>RTSP回看地址<span class="resize-handle"></span></th>
+          <th style="text-align:center" id="tcChOpTh">操作</th>
         </tr>
       </thead>
       <tbody><tr><td colspan="5" style="text-align:center;padding:20px;color:#999">读取中...</td></tr></tbody>
@@ -519,32 +574,30 @@ body.row-dragging{cursor:grabbing;user-select:none}
     <button class="btn btn-sm btn-primary" onclick="telecomSaveChEdit(event)">💾 保存</button>
     <button class="btn btn-sm" onclick="telecomCancelChEdit()">取消</button>
   </div>
-  
-  <div id="tcChReadHint" style="margin-top:8px;font-size:12px;color:var(--text-secondary);line-height:1.6">
-    只读查看本地缓存；点「✏️ 编辑 / 追加」可增删改。保存后自动重生成 sctv 和 XML。
-  </div>
 </div>
 
 <!-- ============ 外部EPG ============ -->
 <div class="panel" id="panel-epg">
 <div style="display:flex;flex-direction:column">
 <h3 style="margin-bottom:8px">📡 EPG 源列表</h3>
-<div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">源配置保存在 <code>data/config/app_config.json</code>（与电信配置、定时任务同一个文件）</div>
+<div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px">源配置保存在 <code>data/config/app_config.json</code></div>
 <div class="toolbar">
 <button class="btn btn-primary" onclick="showAddEpgSource()">➕ 添加源</button>
 <button class="btn" onclick="downloadEpg()">⬇️ 下载EPG</button>
 </div>
 
-<div style="overflow-x:auto;overflow-y:auto;max-height:400px">
-  <table id="epgSourceTable" style="table-layout: fixed; width: 100%; min-width: 800px;">
+<div style="overflow-x:auto;overflow-y:auto;max-height:400px;width:100%;">
+  <table id="epgSourceTable">
     <thead>
       <tr>
-        <th style="width:40px;text-align:center">☰</th>
-        <th style="width:220px;text-align:left">URL<span class="resize-handle"></span></th>
+        <th style="text-align:center">☰</th>
+        <th style="text-align:left">URL<span class="resize-handle"></span></th>
         <th style="text-align:left">备注<span class="resize-handle"></span></th>
-        <th style="width:80px;text-align:center">规则<span class="resize-handle"></span></th>
-        <th style="width:80px;text-align:center">状态<span class="resize-handle"></span></th>
-        <th style="width:120px;text-align:center">操作</th>
+        <th style="text-align:center">规则<span class="resize-handle"></span></th>
+        <th style="text-align:left">缓存文件<span class="resize-handle"></span></th>
+        <th style="text-align:center">状态<span class="resize-handle"></span></th>
+        <th style="text-align:center">开关<span class="resize-handle"></span></th>
+        <th style="text-align:center">操作</th>
       </tr>
     </thead>
     <tbody id="epgSourceBody"></tbody>
@@ -571,7 +624,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <div style="margin-top:16px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:#fafafa;border:1px solid var(--border);border-radius:8px">
 <div style="flex:1;min-width:260px">
  <h3 style="margin:0 0 6px">📥 频道提取</h3>
- <div style="font-size:13px;line-height:1.7;color:var(--text-secondary)">已下载源里的<b>全部频道</b>会列成表格，勾选后一次性加到 EPG 管理；已添加的会标注状态，不会重复添加。</div>
  <div style="font-size:12px;color:var(--text-secondary);margin-top:6px" id="epgPickSummary">统计中...</div>
 </div>
 <div class="toolbar" style="margin:0">
@@ -588,7 +640,7 @@ body.row-dragging{cursor:grabbing;user-select:none}
 </div>
 </div>
 
-<!-- 外部频道提取弹窗：源频道勾选 + 已添加记录 -->
+<!-- 外部频道提取弹窗 -->
 <div class="modal" id="epgExtractModal" onclick="if(event.target===this)closeEpgExtractModal()">
 <div class="modal-content" style="max-width:1200px;width:96%;max-height:90vh;display:flex;flex-direction:column;padding:20px">
 <div class="modal-title" style="flex-shrink:0">📥 外部频道提取 <span id="epgExtractModalCount" style="font-size:12px;font-weight:400;color:var(--text-secondary)"></span></div>
@@ -604,17 +656,20 @@ body.row-dragging{cursor:grabbing;user-select:none}
   <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap">
    <input type="checkbox" id="epgPickUnadded" checked onchange="epgPickPage=1;renderEpgPicker()" style="width:auto"> 只看未添加
   </label>
-  <span class="spacer"></span>
-  <span id="epgPickSelCount" style="font-size:12px;color:var(--text-secondary)"></span>
-  <button class="btn" onclick="epgPickSelectPage()">全选本页</button>
-  <button class="btn" onclick="epgPickClearSel()">清空选择</button>
-  <button class="btn btn-primary" onclick="addPickedEpgChannels()">➕ 添加选中</button>
+<span class="spacer"></span>
+<span id="epgPickSelCount" style="font-size:12px;color:var(--text-secondary)"></span>
+<button class="btn" onclick="epgPickSelectPage()">全选本页</button>
+<button class="btn" onclick="epgPickClearSel()">清空选择</button>
+<button class="btn btn-primary" onclick="addPickedEpgChannels()">➕ 添加选中</button>
+
+<!-- 加上这个按钮（建议用红色醒目一点） -->
+<button class="btn btn-danger" onclick="clearAllEpgCache()">🗑️ 清空所有缓存</button>
  </div>
  <div style="overflow:auto;flex:1;min-height:200px;max-height:60vh;border:1px solid var(--border);border-radius:8px;margin-top:8px">
-  <table id="epgPickTable" style="width:100%;min-width:820px">
+  <table id="epgPickTable">
    <thead><tr>
-    <th style="width:36px;text-align:center"><input type="checkbox" id="epgPickAllBox" onchange="epgPickToggleAll(this.checked)" style="width:auto"></th>
-    <th style="width:150px">来源</th><th>频道名称</th><th style="width:130px">频道 ID</th><th style="width:160px">状态</th><th style="width:80px;text-align:center">操作</th>
+    <th style="width:40px;text-align:center"><input type="checkbox" id="epgPickAllBox" onchange="epgPickToggleAll(this.checked)" style="width:auto"></th>
+    <th style="width:15%">来源</th><th>频道名称</th><th style="width:15%">频道 ID</th><th style="width:15%">状态</th><th style="width:10%;text-align:center">操作</th>
    </tr></thead>
    <tbody id="epgPickBody"></tbody>
   </table>
@@ -636,7 +691,7 @@ body.row-dragging{cursor:grabbing;user-select:none}
   </label>
  </div>
  <div style="overflow:auto;flex:1;min-height:150px;max-height:60vh;border:1px solid var(--border);border-radius:8px;margin-top:8px">
- <table id="epgExtractTable" style="table-layout:fixed;width:100%;min-width:860px"><thead><tr><th style="width:30px;text-align:center">☰</th><th style="width:159px;text-align:left">频道名称<span class="resize-handle"></span></th><th style="width:99px;text-align:left">TVG-ID<span class="resize-handle"></span></th><th>来源备注<span class="resize-handle"></span></th><th style="width:60px;text-align:center">规则<span class="resize-handle"></span></th><th style="width:100px;text-align:center">操作</th></tr></thead><tbody id="epgExtractBody"></tbody></table>
+ <table id="epgExtractTable"><thead><tr><th style="width:40px;text-align:center">☰</th><th style="width:20%;text-align:left">频道名称<span class="resize-handle"></span></th><th style="width:15%;text-align:left">TVG-ID<span class="resize-handle"></span></th><th>来源备注<span class="resize-handle"></span></th><th style="width:10%;text-align:center">规则<span class="resize-handle"></span></th><th style="width:15%;text-align:center">操作</th></tr></thead><tbody id="epgExtractBody"></tbody></table>
  </div>
 </div>
 
@@ -649,21 +704,38 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <!-- ============ EPG管理 ============ -->
 <div class="panel" id="panel-epgchannels">
 <h3 style="margin-bottom:8px">📋 EPG 频道管理</h3>
-<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">此列表控制 XML 生成和 M3U 匹配的下拉选项 · 「🔄 刷新」只补不删，清理请用「🧹 清理孤儿」</p>
 <div class="toolbar">
 <button class="btn" onclick="refreshEpgChannels()" title="把外部 EPG 提取记录增量补进来，不会删除任何频道">🔄 刷新</button>
 <button class="btn" onclick="cleanupEpgOrphans()" title="只删「来源已不存在」的频道">🧹 清理孤儿</button>
 <button class="btn btn-primary" onclick="showAddEpgChannel()">➕ 添加频道</button>
+<button class="btn btn-success" onclick="buildXml()" title="合并并生成最新的 epg.xml">📄 生成XML</button>
+<a class="btn" href="/api/download/epg.xml" target="_blank" title="下载刚生成的 XML 文件" style="text-decoration:none">📥 XML</a>
+<a class="btn" href="/api/download/epg.xml.gz" target="_blank" title="下载压缩后的 GZ 文件" style="text-decoration:none">📥 GZ</a>
 <input type="text" id="epgChSearch" placeholder="搜索频道 / TVG-ID / TVG-NAME / 来源..." oninput="renderEpgChannels()" style="width:240px">
+<button class="btn" onclick="showEpgPivot()" title="查看每个频道今日是否有数据、数据来源、节目数">📊 数据透视</button>
 <span class="spacer"></span>
+<button class="btn" onclick="batchToggleEpgCh(true)">✅ 批量启用</button>
+<button class="btn" onclick="batchToggleEpgCh(false)">⛔ 批量禁用</button>
+<button class="btn btn-danger" onclick="batchDeleteEpgCh()">🗑️ 批量删除</button>
 <button class="btn btn-danger" onclick="clearAllEpgChannels()">🗑️ 清空</button>
 </div>
 <div style="overflow-x:auto;overflow-y:auto;max-height:60vh">
-<table id="epgChTable"><thead><tr><th style="width:30px;text-align:center">☰</th><th style="width:188px">频道名称<span class="resize-handle"></span></th><th style="width:120px;text-align:left">TVG-ID<span class="resize-handle"></span></th><th style="width:400px">TVG-NAME<span class="resize-handle"></span></th><th style="width:227px">来源<span class="resize-handle"></span></th><th style="width:109px;text-align:center">状态<span class="resize-handle"></span></th><th style="width:104px;text-align:center">操作</th></tr></thead><tbody id="epgChannelBody"></tbody></table>
+<table id="epgChTable">
+<thead><tr>
+  <th style="width:40px;text-align:center"><input type="checkbox" id="epgChAllBox" onchange="epgChToggleAll(this.checked)" style="width:auto"></th>
+  <th style="width:40px;text-align:center">☰</th>
+  <th style="width:18%">频道名称<span class="resize-handle"></span></th>
+  <th style="width:13%;text-align:left">TVG-ID<span class="resize-handle"></span></th>
+  <th style="width:22%">TVG-NAME<span class="resize-handle"></span></th>
+  <th>来源<span class="resize-handle"></span></th>
+  <th style="width:8%;text-align:center">状态<span class="resize-handle"></span></th>
+  <th style="width:10%;text-align:center">操作</th>
+</tr></thead>
+<tbody id="epgChannelBody"></tbody></table>
 </div>
 </div>
 
-<!-- ============ 频道管理（原 M3U 管理） ============ -->
+<!-- ============ 频道管理 ============ -->
 <div class="panel" id="panel-m3u">
 <div class="toolbar">
 <button class="btn" style="background:#722ed1;color:#fff" onclick="showMergeM3u()">🔀 合并文件</button>
@@ -701,13 +773,9 @@ body.row-dragging{cursor:grabbing;user-select:none}
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn btn-primary btn-sm" onclick="saveM3uConfig()">💾 保存配置</button>
     </div>
-    <div style="font-size:11px;color:var(--text-secondary);margin-top:8px;line-height:1.6">
-      💡 保存后打开「🔀 合并文件」弹窗会自动带入这些配置（双向同步）
-    </div>
     <div style="margin-top:16px;padding-top:12px;border-top:1px dashed var(--border)">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
         <span style="font-weight:600;font-size:13px">📂 分组规则</span>
-        <span style="font-size:11px;color:var(--text-secondary)">（按优先级从上到下匹配频道）</span>
         <span style="flex:1"></span>
         <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-size:12px">
           <input type="checkbox" id="grpRulesEnabled" style="width:auto"> 合并时自动应用
@@ -724,50 +792,67 @@ body.row-dragging{cursor:grabbing;user-select:none}
   </div>
 </div>
 
-<div id="m3uFileList"></div>
+<div id="m3uFileList" style="overflow-x:auto;"></div>
 
 <div id="m3uEditor" style="display:none;margin-top:16px">
 <h3 id="m3uEditorTitle" style="margin-bottom:8px">📝 M3U 匹配编辑</h3>
 <div class="toolbar">
 <button class="btn btn-warning" onclick="m3uBatchReplace()">批量替换</button>
-<button class="btn" onclick="sortM3uEntries('name')">🔤 名称排序</button>
-<button class="btn" onclick="sortM3uEntries('url')">🔗 URL 排序</button>
+<!-- 👇 删掉名称排序、URL排序按钮 👇 -->
+<button class="btn btn-success" onclick="m3uMatchAllEntries();autoSaveM3u();renderM3uTable(currentM3uEntries,_m3uOptions);showToast('已重新执行自动匹配','success')">✨ 重新自动匹配</button>
+<button class="btn btn-success" onclick="m3uAutoGroup()">📂 自动分组</button>
+<button class="btn btn-danger" onclick="m3uBatchDelete()">🗑️ 批量删除</button>
 <button class="btn btn-danger" onclick="closeM3uEditor()">关闭</button>
 <button class="btn" onclick="refreshM3uOptions()">刷新选项</button>
 <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
  <input type="checkbox" id="m3uMergeCheck" checked onchange="m3uToggleMerge()" style="width:auto;flex-shrink:0"> 合并重复
 </label>
+<!-- 👇 这两个加上 checked 👇 -->
 <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
- <input type="checkbox" id="m3uShowGroup" onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道分组
+ <input type="checkbox" id="m3uShowGroup" checked onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道分组
 </label>
 <label style="font-size:12px;display:inline-flex;align-items:center;gap:4px;cursor:pointer;white-space:nowrap;flex-shrink:0">
- <input type="checkbox" id="m3uShowIcon" onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道图标
+ <input type="checkbox" id="m3uShowIcon" checked onchange="m3uToggleColumns()" style="width:auto;flex-shrink:0"> 频道图标
 </label>
 <span class="spacer"></span>
 </div>
-<div style="overflow:auto;max-height:66vh"><table id="m3uEditTable" style="table-layout:fixed;width:100%"><thead><tr><th style="width:30px;text-align:center">☰</th><th id="m3uThUrl" style="width:290px">URL / 地址<span class="resize-handle"></span></th><th id="m3uThGroup" style="width:130px;display:none">频道分组<span class="resize-handle"></span></th><th id="m3uThIcon" style="width:130px;display:none">频道图标<span class="resize-handle"></span></th><th style="width:81px;text-align:left">tvg-id<span class="resize-handle"></span></th><th id="m3uThTvgname" style="width:186px">tvg-name<span class="resize-handle"></span></th><th id="m3uThDisplay" style="width:195px">显示名称<span class="resize-handle"></span></th><th id="m3uThMatch" style="width:120px">匹配节目单</th><th style="width:60px;text-align:center">操作</th></tr></thead><tbody id="m3uEditBody"></tbody>
+<div style="overflow:auto;max-height:66vh">
+<table id="m3uEditTable">
+  <thead><tr>
+    <th style="width:32px;text-align:center"><input type="checkbox" id="m3uAllBox" onchange="m3uToggleAll(this.checked)" style="width:auto"></th>
+    <th style="width:40px;text-align:center">☰</th>
+    <th id="m3uThDisplay" style="width:15%">频道名称<span class="resize-handle"></span></th>
+    <th id="m3uThUrl" style="width:auto">URL / 地址<span class="resize-handle"></span></th>
+    <th id="m3uThGroup" style="width:10%">频道分组<span class="resize-handle"></span></th>
+    <th style="width:10%;text-align:left">tvg-id<span class="resize-handle"></span></th>
+    <th id="m3uThTvgname" style="width:15%">tvg-name<span class="resize-handle"></span></th>
+    <th id="m3uThMatch" style="width:12%">匹配节目单</th>
+    <th id="m3uThIcon" style="width:10%">频道图标<span class="resize-handle"></span></th>
+    <th style="width:120px;text-align:center">操作</th>
+  </tr></thead>
+  <tbody id="m3uEditBody"></tbody>
   <tfoot id="m3uNewRow">
-   <tr>
-    <td style="text-align:center;color:#ccc">+</td>
-    <td id="m3uNewUrlTd"><input id="m3uNewUrl" placeholder="URL地址..." style="border:none;background:transparent;width:100%;font-size:11px" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
-    <td id="m3uNewGroupTd" style="display:none"></td>
-    <td id="m3uNewIconTd" style="display:none"></td>
-    <td><input id="m3uNewTvgId" placeholder="tvg-id" style="width:60px;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
-    <td><input id="m3uNewTvgName" placeholder="tvg-name" style="width:100%;min-width:100px;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
-    <td><input id="m3uNewDispName" placeholder="显示名称" style="border:none;background:transparent;width:100%" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
-    <td style="text-align:center"><span class="badge badge-success">新建</span></td>
+  <tr>
     <td></td>
-   </tr>
-  </tfoot></table></div>
+    <td style="text-align:center;color:#ccc">+</td>
+    <td><input id="m3uNewDispName" placeholder="显示名称" style="border:none;background:transparent;width:100%" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td id="m3uNewUrlTd"><input id="m3uNewUrl" placeholder="URL地址..." style="border:none;background:transparent;width:100%;font-size:11px" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td id="m3uNewGroupTd"></td>
+    <td><input id="m3uNewTvgId" placeholder="tvg-id" style="width:100%;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td><input id="m3uNewTvgName" placeholder="tvg-name" style="width:100%;border:none;background:transparent" onblur="m3uAddNew()" onkeydown="if(event.key==='Enter')this.blur()"></td>
+    <td style="text-align:center"><span class="badge badge-success">新建</span></td>
+    <td id="m3uNewIconTd"></td>
+    <td></td>
+  </tr>
+  </tfoot>
+</table>
+</div>
 </div>
 </div>
 
 <!-- ============ 频道总览 ============ -->
 <div class="panel" id="panel-overview">
 <h3 style="margin-bottom:8px">📇 频道总览</h3>
-<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">
-  电信频道：显示「直播地址 / 回看地址 / 时移 / FCC」；选 M3U/TXT 文件：显示合并结果里的频道（含 catchup-source 回看地址）
-</p>
 <div class="toolbar">
  <select id="ovSource" onchange="loadOverview()" style="width:300px"></select>
  <input id="ovSearch" placeholder="搜索频道 / 地址..." oninput="renderOverview()" style="width:220px">
@@ -783,16 +868,16 @@ body.row-dragging{cursor:grabbing;user-select:none}
  <span id="ovCount" style="font-size:12px;color:var(--text-secondary)"></span>
 </div>
 <div style="overflow:auto;max-height:66vh">
-<table id="ovTable" style="table-layout:fixed;width:100%;min-width:1500px">
+<table id="ovTable">
 <thead><tr>
- <th style="width:140px">频道<span class="resize-handle"></span></th>
- <th style="width:120px">TVG-NAME<span class="resize-handle"></span></th>
- <th style="width:220px">台标 URL<span class="resize-handle"></span></th>
- <th style="width:320px">直播地址<span class="resize-handle"></span></th>
- <th style="width:320px">回看地址<span class="resize-handle"></span></th>
- <th style="width:100px;text-align:center">时移 / FCC<span class="resize-handle"></span></th>
- <th style="width:140px">TVG-ID / 分组<span class="resize-handle"></span></th>
- <th style="width:130px;text-align:center">操作</th>
+ <th>频道<span class="resize-handle"></span></th>
+ <th>TVG-NAME<span class="resize-handle"></span></th>
+ <th>台标 URL<span class="resize-handle"></span></th>
+ <th>直播地址<span class="resize-handle"></span></th>
+ <th>回看地址<span class="resize-handle"></span></th>
+ <th style="text-align:center">时移 / FCC<span class="resize-handle"></span></th>
+ <th>TVG-ID / 分组<span class="resize-handle"></span></th>
+ <th style="text-align:center">操作</th>
 </tr></thead>
 <tbody id="ovBody"></tbody></table>
 </div>
@@ -801,7 +886,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <!-- ============ 频道台标 ============ -->
 <div class="panel" id="panel-icons">
 <h3 style="margin-bottom:8px">🖼️ 频道台标管理</h3>
-<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">上传频道台标图片，支持 PNG/JPG/SVG/GIF/WebP，外网可访问</p>
 <div class="toolbar">
 <button class="btn btn-primary" onclick="showIconUpload()">📤 上传台标</button>
 <button class="btn" onclick="refreshIcons()">🔄 刷新</button>
@@ -812,7 +896,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 <!-- ============ 共享目录管理 ============ -->
 <div class="panel" id="panel-sharedir">
 <h3 style="margin-bottom:8px">📁 共享目录管理</h3>
-<p style="font-size:12px;color:var(--text-secondary);margin-bottom:8px">上传文件到共享目录或删除已有文件</p>
 <div class="toolbar">
 <button class="btn btn-primary" onclick="showShareUpload()">📤 上传文件</button>
 <button class="btn" onclick="try{loadShareFiles()}catch(e){}">🔄 刷新</button>
@@ -838,11 +921,6 @@ body.row-dragging{cursor:grabbing;user-select:none}
 </div>
 </div>
 
-<!-- ★ 脚本加版本号，避免缓存旧代码 -->
-<script src="/static/js/webplayer.js?v=20261022z"></script>
-<script src="/static/js/telecomepg.js?v=20261022z"></script>
-<script src="/static/js/app.js?v=20261022z"></script>
-
 <!-- 模态框 -->
 <div class="modal" id="modal">
 <div class="modal-content">
@@ -853,6 +931,10 @@ body.row-dragging{cursor:grabbing;user-select:none}
 </div>
 </div>
 </div>
+
+<script src="/static/js/webplayer.js?v=20261029a"></script>
+<script src="/static/js/telecomepg.js?v=20261029a"></script>
+<script src="/static/js/app.js?v=20261029a"></script>
 
 </body>
 </html>

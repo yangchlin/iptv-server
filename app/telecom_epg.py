@@ -96,7 +96,7 @@ def get_telecom_config() -> Dict[str, Any]:
         "templateName": "",
         "areaId": "",
         "epg_server_url": "",
-        "epgname": "epg.xml.gz",
+        "epgname": "epg.xml",
         "logo_url": "",
         "merge_output_files": True,
     }
@@ -473,9 +473,22 @@ def telecom_download_epg(host, cookies, user_token, stbid,
             "stbid": stbid, "SupportHD": "1",
             "UserID": config_data.get("UserID", ""), "Lang": "1",
         }
-        resp = requests.post(epg_url, headers=headers, cookies=cookies,
-                             data=data, timeout=30)
-        resp.raise_for_status()
+        # ★ 电信服务器偶发超时，单次失败直接丢节目。照认证流程一样做 3 次退避重试。
+        resp = None
+        for attempt in range(3):
+            try:
+                resp = requests.post(epg_url, headers=headers, cookies=cookies,
+                                     data=data, timeout=30)
+                resp.raise_for_status()
+                break
+            except requests.exceptions.RequestException:
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+        if resp is None:
+            result["message"] = "下载EPG失败: 重试耗尽"
+            return result
 
         match = re.search(r'parent\.jsonBackLookStr\s*=\s*(\[.*?\]);', resp.text, re.DOTALL)
         if not match:

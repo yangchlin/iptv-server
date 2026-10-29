@@ -59,11 +59,16 @@ _lock = threading.Lock()
 # ════════════════════════════════════════════════════════════════
 
 def _get_cookie_name(request: Request) -> str:
-    """根据请求的 Host 或 Port，动态生成 Cookie 名字"""
     host = request.headers.get("host", "")
-    port = request.url.port or 80
-    if ":" in host:
+    port = ""
+    if host.startswith("["):
+        # IPv6：[::1]:5673 → 5673；[::1] → 空
+        if "]:" in host:
+            port = host.split("]:")[-1]
+    elif ":" in host:
         port = host.split(":")[-1]
+    if not port:
+        port = request.url.port or (443 if request.url.scheme == "https" else 80)
     return f"auth_token_{port}"
 
 

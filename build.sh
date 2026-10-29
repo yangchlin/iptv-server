@@ -65,6 +65,7 @@ fi
 WEB_PORT="${WEB_PORT:-5673}"
 DATA_ROOT="${DATA_ROOT:-./data}"
 SHARE_DIR="${SHARE_DIR:-./data/share}"
+TOOLS_DIR="${TOOLS_DIR:-${DATA_ROOT}/tools}"
 
 # ---------- 4. 数据目录 ----------
 mkdir -p \
@@ -74,7 +75,9 @@ mkdir -p \
     "${DATA_ROOT}/icons" \
     "${DATA_ROOT}/logs" \
     "${DATA_ROOT}/config" \
-    "${SHARE_DIR}"
+    "${SHARE_DIR}" \
+    "${TOOLS_DIR}" \
+    "${DATA_ROOT}/config/epg_cache"
 say "📁 数据目录：$(cd "${DATA_ROOT}" && pwd)"
 
 # ---------- 5. 等健康检查 ----------

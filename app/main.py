@@ -7,7 +7,9 @@ import json
 import re
 import time
 import uuid
+import httpx
 from collections import defaultdict
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote
 
@@ -31,7 +33,16 @@ from .auth import router as auth_router
 from .telecom_api import router as telecom_router
 from .progress import download_progress   # 与 telecom_api.py 共享的进度对象
 
-app = FastAPI(title="iptv-server EPG 管理系统")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler.start()
+    yield
+    scheduler.stop()
+    await downloader.close_client()
+
+
+app = FastAPI(title="iptv-server EPG 管理系统", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 static_dir = Path(__file__).parent.parent / "static"
@@ -881,27 +892,36 @@ async def delete_epg_source(index: int):
 async def download_epg():
     if download_progress._running:
         return {"success": False, "error": "已有任务运行中"}
+    download_progress.clear()
+    download_progress._running = True
+    download_progress._paused = False
+    download_progress._stopped = False
     asyncio.create_task(_run_epg_download())
     return {"success": True, "message": "EPG 下载已启动"}
 
 
 async def _run_epg_download():
-    results = await downloader.download_all_epg_sources(
-        progress_callback=download_progress.add_message,
-        log_callback=lambda msg: logger.log(msg),
-    )
-    ok = sum(1 for r in results if r and r.get("success"))
-    fail = sum(1 for r in results if r and not r.get("success"))
-    if ok == 0:
-        await download_progress.add_message(
-            f"❌ 全部 {fail} 个源都下载失败，已跳过合并（请检查源 URL / 网络）"
+    try:
+        results = await downloader.download_all_epg_sources(
+            progress_callback=download_progress.add_message,
+            log_callback=lambda msg: logger.log(msg),
         )
-        return
-    await download_progress.add_message(
-        f"EPG 下载完成：成功 {ok} / 失败 {fail}，正在合并..."
-    )
-    await asyncio.to_thread(scheduler.run_merge)
-    await download_progress.add_message("EPG 合并完成")
+        ok = sum(1 for r in results if r and r.get("success"))
+        fail = sum(1 for r in results if r and not r.get("success"))
+        if ok == 0:
+            await download_progress.add_message(
+                f"❌ 全部 {fail} 个源都下载失败，已跳过合并（请检查源 URL / 网络）"
+            )
+            return
+        await download_progress.add_message(
+            f"EPG 下载完成：成功 {ok} / 失败 {fail}。请前往「频道提取」或手动点击「生成XML」。"
+        )
+    except Exception as e:
+        await download_progress.add_message(f"❌ EPG 下载出错: {e}")
+    finally:
+        download_progress._running = False
+        download_progress._paused = False
+        download_progress._stopped = False
 
 
 @app.post("/api/epg/sources/{index}/download")
@@ -944,15 +964,29 @@ async def _run_single_epg_download(src: dict):
             err = (result or {}).get("error") or "未知错误"
             await download_progress.add_message(f"EPG 源下载失败: {err}")
             return
-        await download_progress.add_message("EPG 源下载完成，正在合并...")
-        await asyncio.to_thread(scheduler.run_merge)
-        await download_progress.add_message("EPG 合并完成")
+        await download_progress.add_message("EPG 源下载完成。请前往「频道提取」或手动点击「生成XML」。")
     except Exception as e:
         await download_progress.add_message(f"下载异常: {e}")
     finally:
         download_progress._running = False
         download_progress._paused = False
         download_progress._stopped = False
+
+@app.post("/api/epg/clear-cache")
+async def clear_epg_cache():
+    """清空所有外部 EPG 缓存文件（彻底解决删除源后幽灵频道还在的问题）"""
+    cache_dir = config.CONFIG_DIR / "epg_cache"
+    deleted_count = 0
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.xml*"):
+            try:
+                f.unlink()
+                deleted_count += 1
+            except OSError as e:
+                logger.warning(f"删除缓存文件 {f.name} 失败: {e}")
+    
+    logger.log(f"[EPG] 已手动清空 {deleted_count} 个外部 EPG 缓存文件", category="清理")
+    return {"success": True, "message": f"已清空 {deleted_count} 个缓存文件"}
 
 
 @app.get("/api/epg/channels")
@@ -1053,6 +1087,208 @@ async def search_epg_channels(keyword: str = ""):
         "total_channels": len(seen),
     }
 
+# ════════════════════════════════════════════════════════════════
+# EPG 数据透视 / 批量操作 / 失败告警 / 纯净 M3U
+# ════════════════════════════════════════════════════════════════
+
+@app.get("/api/epg/pivot")
+async def epg_pivot(date: str = ""):
+    """EPG 数据透视：每个 EPG 频道今天是否有数据、数据来源、节目数。
+
+    候选文件名（依次尝试，命中即止）：
+      - <频道名>_telecom_<日期>.json       （电信数据）
+      - <频道名>_<日期>.json               （频道 URL 直下 / 外部提取）
+      - <safe_filename(频道名)>_<日期>.json （外部提取走的是 safe_filename）
+    """
+    if not date:
+        date = datetime.date.today().strftime("%Y%m%d")
+    elif not re.fullmatch(r"\d{8}", date):
+        raise HTTPException(400, "日期格式错误")
+
+    channels = config.get_epg_channels()
+    extracts = config.get_epg_extracts()
+
+    # {epg logic_id: [提取记录名...]}，用于显示"并入"
+    merged_map = {}
+    for e in extracts:
+        tid = str(e.get("target_logic_id", "") or "")
+        if tid:
+            merged_map.setdefault(tid, []).append(str(e.get("name", "") or ""))
+
+    rows = []
+    for ch in channels:
+        name = ch.get("name", "") or ""
+        if not name:
+            continue
+        safe = config.safe_filename(name)
+        bases = [name]
+        if safe and safe != name:
+            bases.append(safe)
+
+        # 候选路径（telecom 优先，其次普通，去重）
+        candidates = []
+        seen = set()
+        for base in bases:
+            for fn in (f"{base}_telecom_{date}.json", f"{base}_{date}.json"):
+                if fn not in seen:
+                    seen.add(fn)
+                    candidates.append(fn)
+
+        found_path = None
+        for fn in candidates:
+            p = config.JSON_DIR / fn
+            if p.is_file():
+                found_path = p
+                break
+
+        prog_count = 0
+        data_source = "无"
+        file_name = ""
+        if found_path:
+            file_name = found_path.name
+            try:
+                d = json.loads(found_path.read_text(encoding="utf-8"))
+                prog_count = len(d.get("programmes") or [])
+            except Exception:
+                prog_count = 0
+            if "_telecom_" in found_path.name:
+                data_source = "电信"
+            elif str(ch.get("source_type", "")) == "extract":
+                data_source = "外部EPG提取"
+            elif str(ch.get("source_type", "")) == "telecom":
+                data_source = "电信（自建JSON）"
+            else:
+                data_source = "自建JSON"
+
+        rows.append({
+            "name": name,
+            "tvg_id": ch.get("tvg_id", ""),
+            "source_type": ch.get("source_type", ""),
+            "enabled": ch.get("enabled", True),
+            "has_data": prog_count > 0,
+            "programme_count": prog_count,
+            "data_source": data_source,
+            "file": file_name,
+            "merged_from": merged_map.get(str(ch.get("logic_id", "")), []),
+        })
+
+    return {
+        "date": date,
+        "total": len(rows),
+        "with_data": sum(1 for r in rows if r["has_data"]),
+        "without_data": sum(1 for r in rows if not r["has_data"]),
+        "rows": rows,
+    }
+
+
+@app.post("/api/epg-channels/batch-delete")
+async def batch_delete_epg_channels(data: dict = Body(...)):
+    """批量删除 EPG 频道（按 logic_id；同步清理关联提取记录）。"""
+    lids = data.get("logic_ids") or []
+    if not isinstance(lids, list) or not lids:
+        raise HTTPException(400, "logic_ids 不能为空")
+    lidset = {str(x) for x in lids}
+
+    channels = config.get_epg_channels()
+    kept = [c for c in channels if str(c.get("logic_id", "")) not in lidset]
+    removed = len(channels) - len(kept)
+    if not removed:
+        return {"success": True, "deleted": 0}
+
+    config.save_epg_channels(kept)
+
+    extracts = config.get_epg_extracts()
+    new_extracts = [
+        e for e in extracts
+        if str(e.get("target_logic_id", "")) not in lidset
+        and str(e.get("logic_id", "")) not in lidset
+    ]
+    if len(new_extracts) != len(extracts):
+        config.save_epg_extracts(new_extracts)
+
+    return {"success": True, "deleted": removed}
+
+
+@app.post("/api/epg-channels/batch-toggle")
+async def batch_toggle_epg_channels(data: dict = Body(...)):
+    """批量启用/禁用 EPG 频道（按 logic_id）。"""
+    lids = data.get("logic_ids") or []
+    enabled = bool(data.get("enabled", True))
+    if not isinstance(lids, list) or not lids:
+        raise HTTPException(400, "logic_ids 不能为空")
+    lidset = {str(x) for x in lids}
+
+    channels = config.get_epg_channels()
+    n = 0
+    for c in channels:
+        if str(c.get("logic_id", "")) in lidset:
+            c["enabled"] = enabled
+            n += 1
+    if n:
+        config.save_epg_channels(channels)
+    return {"success": True, "affected": n, "enabled": enabled}
+
+
+@app.get("/api/epg/failures")
+async def get_epg_failures_api():
+    """外部 EPG 源最近下载失败的告警列表。"""
+    return {"failures": downloader.get_epg_failures()}
+
+
+@app.post("/api/epg/failures/clear")
+async def clear_epg_failures_api(data: dict = Body(default={})):
+    url = str((data or {}).get("url", "") or "")
+    downloader.clear_epg_failure(url)
+    return {"success": True}
+
+
+@app.get("/api/m3u/{filename}/export-clean")
+async def export_clean_m3u(filename: str):
+    """导出"仅保留匹配到节目单的频道"的 M3U（附件形式下载）。
+
+    过滤规则：tvg-name 为空 / tvg-id 为 9999 / 频道名为"暂无节目单" → 丢弃。
+    """
+    safe = _safe_basename(filename)
+    if not safe:
+        raise HTTPException(400, "非法文件名")
+    path = config.M3U_DIR / safe
+    if not path.is_file():
+        raise HTTPException(404, "文件不存在")
+
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise HTTPException(500, f"读取失败: {e}")
+
+    if safe.lower().endswith(".txt"):
+        parsed = m3u_handler.parse_txt(content)
+    else:
+        parsed = m3u_handler.parse_m3u(content, merge_duplicates=False)
+
+    clean = []
+    for e in parsed.get("entries", []):
+        tvg_name = (e.get("tvg_name") or "").strip()
+        tvg_id = (e.get("tvg_id") or "").strip()
+        if not tvg_name or tvg_id == "9999" or tvg_name == "暂无节目单":
+            continue
+        clean.append(e)
+
+    header = parsed.get("header") or "#EXTM3U"
+    new_content = m3u_handler.rebuild_m3u(clean, header)
+
+    base = safe.rsplit(".", 1)[0] if "." in safe else safe
+    clean_name = f"{base}_clean.m3u"
+
+    from urllib.parse import quote as _q
+    return Response(
+        content=new_content,
+        media_type="audio/x-mpegurl",
+        headers={
+            "Content-Disposition":
+                f'attachment; filename="{clean_name}"; '
+                f"filename*=UTF-8''{_q(clean_name)}",
+        },
+    )
 
 # ════════════════════════════════════════════════════════════════
 # EPG 提取记录
@@ -1232,14 +1468,32 @@ async def delete_epg_extract(index: int):
     extracts = config.get_epg_extracts()
     if index < 0 or index >= len(extracts):
         raise HTTPException(404, "记录不存在")
-    extracts.pop(index)
+    deleted = extracts.pop(index)
     config.save_epg_extracts(extracts)
+    
+    # ★ 新增：同步清理 EPG 管理里由该记录生成的独立频道
+    lid = deleted.get("logic_id")
+    if lid:
+        channels = config.get_epg_channels()
+        new_channels = [ch for ch in channels if str(ch.get("logic_id", "")) != str(lid)]
+        if len(new_channels) != len(channels):
+            config.save_epg_channels(new_channels)
+            logger.log(f"[EPG] 删除提取记录时，同步清理了对应的独立频道（Logic ID: {lid}）", category="EPG")
+            
     return {"success": True}
 
 @app.post("/api/epg/extracts/clear")
 async def clear_epg_extracts():
     """一键清空所有提取记录"""
     config.save_epg_extracts([])
+    
+    # ★ 新增：同步清理所有 source_type='extract' 的频道
+    channels = config.get_epg_channels()
+    new_channels = [ch for ch in channels if str(ch.get("source_type", "")) != "extract"]
+    if len(new_channels) != len(channels):
+        config.save_epg_channels(new_channels)
+        logger.log(f"[EPG] 清空提取记录，同时清理了 {len(channels) - len(new_channels)} 个独立频道", category="EPG")
+        
     return {"success": True}
 
 @app.post("/api/epg/extracts/import")
@@ -1276,6 +1530,10 @@ async def import_epg_extracts(data: list = Body(...)):
 async def extract_epg_to_json():
     if download_progress._running:
         return {"success": False, "error": "有任务正在运行"}
+    download_progress.clear()
+    download_progress._running = True
+    download_progress._paused = False
+    download_progress._stopped = False
     asyncio.create_task(_run_extract_to_json())
     return {"success": True, "message": "外部EPG提取已启动"}
 
@@ -1360,7 +1618,8 @@ async def _run_extract_to_json():
                 save_path = json_dir / f"{safe}_{d}.json"
                 prog_list = [
                     {"name": raw_name, "start": p.get("start", ""),
-                     "stop": p.get("stop", ""), "title": p.get("title", "")}
+                     "stop": p.get("stop", ""), "title": p.get("title", ""),
+                     "desc": p.get("desc", "")}
                     for p in progs
                 ]
                 try:
@@ -1397,6 +1656,10 @@ async def _run_extract_to_json():
 async def extract_and_merge_all():
     if download_progress._running:
         return {"success": False, "error": "有任务正在运行"}
+    download_progress.clear()
+    download_progress._running = True
+    download_progress._paused = False
+    download_progress._stopped = False
     asyncio.create_task(_run_extract_and_merge())
     return {"success": True, "message": "提取合并任务已启动"}
 
@@ -1432,30 +1695,27 @@ async def _run_extract_and_merge():
             rule = ext.get("rule", "auto")
             source_url = ext.get("source_url", "")
 
-            cache_text = ""
-            if source_url and epg_cache.exists():
-                cache_name = source_url.split("/")[-1].replace(".gz", "")
-                for cf in epg_cache.glob("*.xml"):
-                    if cache_name in cf.name or cf.name.startswith(cache_name):
-                        try:
-                            cache_text = cf.read_text(encoding="utf-8")
-                        except Exception:
-                            pass
-                        break
+            # ★ 修复：用 resolve_cache_files 精确匹配，不再用 "cache_name in cf.name" 子串
+            programmes = []
+            for cf in epg_parser.resolve_cache_files(epg_cache, source_url):
+                try:
+                    cache_text = cf.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                progs = epg_parser.extract_programmes(cache_text, rule, name)
+                if progs:
+                    programmes.extend(progs)
+                    break
 
-            if not cache_text:
-                logger.log(f"[EPG]   [{idx}/{len(extracts)}] {name}: ⚠️ 未找到EPG缓存文件，跳过", category="EPG")
-                await download_progress.add_message(f"  [{idx}/{len(extracts)}] {name}: 未找到对应的 EPG 缓存文件")
+            if not programmes:
+                logger.log(f"[EPG]   [{idx}/{len(extracts)}] {name}: ⚠️ 未找到对应缓存或节目为空，跳过", category="EPG")
+                await download_progress.add_message(f"  [{idx}/{len(extracts)}] {name}: 未找到对应的 EPG 缓存文件或节目为空")
                 extract_fail += 1
                 continue
 
-            programmes = epg_parser.extract_programmes(cache_text, rule, name)
             count = len(programmes)
             total_programmes += count
-            if count > 0:
-                extract_success += 1
-            else:
-                extract_fail += 1
+            extract_success += 1
             await download_progress.add_message(
                 f"  [{idx}/{len(extracts)}] {name}: 从 {source_url.split('/')[-1][:30]} 提取到 {count} 条节目")
 
@@ -1640,8 +1900,46 @@ async def save_group_rules_api(data: dict = Body(...)):
 
 
 # ════════════════════════════════════════════════════════════════
-# M3U 文件列表 / 上传 / 编辑
+# M3U 文件列表 / 上传 / 编辑 / 直链下载
 # ════════════════════════════════════════════════════════════════
+
+@app.post("/api/m3u/download-url")
+async def download_m3u_url_api(data: dict = Body(...)):
+    """后端代下载 M3U 链接（解决浏览器跨域限制）"""
+    url = (data.get("url") or "").strip()
+    if not url:
+        raise HTTPException(400, "URL 不能为空")
+    if not downloader._is_safe_http_url(url):
+        raise HTTPException(400, "URL 不允许（协议非法）")
+
+    try:
+        client = downloader.get_client()
+        async with client.stream("GET", url) as resp:
+            resp.raise_for_status()
+            content = await downloader._read_limited(resp, 50 * 1024 * 1024) # 限制 50MB
+            if content is None:
+                raise HTTPException(400, "文件超过 50MB 上限")
+            
+        text = content.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        
+        filename = url.split("/")[-1] or f"m3u_{int(time.time())}.m3u"
+        filename = _safe_basename(filename)
+        if not filename.endswith((".m3u", ".m3u8", ".txt")):
+            filename += ".m3u"
+            
+        save_path = config.M3U_DIR / filename
+        tmp = save_path.with_name(save_path.name + ".tmp")
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        tmp.replace(save_path)
+        
+        return {"success": True, "filename": filename, "path": str(save_path)}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(400, f"对方服务器返回错误: HTTP {e.response.status_code}")
+    except httpx.RequestError as e:
+        raise HTTPException(400, f"网络请求失败: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"下载失败: {e}")
 
 @app.get("/api/m3u")
 async def list_m3u_files():
@@ -2021,11 +2319,14 @@ async def upload_share_file(request: Request):
     if len(body) > 200 * 1024 * 1024:
         return {"success": False, "error": "文件过大（>200MB）"}
 
+    # ★ 只有前端带 X-Base64: 1 时才解码：避免 curl 直接发二进制、恰好是合法
+    #   base64 字符集时被误解码成乱码写盘。
     import base64
-    try:
-        body = base64.b64decode(body)
-    except Exception:
-        pass
+    if request.headers.get("x-base64") == "1":
+        try:
+            body = base64.b64decode(body)
+        except Exception:
+            return {"success": False, "error": "base64 解码失败"}
 
     save_path = share_dir / filename
     if save_path.exists():
@@ -2092,11 +2393,13 @@ async def upload_icon(request: Request):
     if len(body) > 20 * 1024 * 1024:
         return {"success": False, "error": "文件过大（>20MB）"}
 
+    # ★ 同 upload_share_file：仅 X-Base64: 1 时解码
     import base64
-    try:
-        body = base64.b64decode(body)
-    except Exception:
-        pass
+    if request.headers.get("x-base64") == "1":
+        try:
+            body = base64.b64decode(body)
+        except Exception:
+            return {"success": False, "error": "base64 解码失败"}
 
     save_path = config.ICONS_DIR / filename
     if save_path.exists():
@@ -2127,7 +2430,7 @@ async def delete_icon(filename: str):
 
 
 # ════════════════════════════════════════════════════════════════
-# 短路径 EPG URL（兼容 IPTV 播放器，公开）
+# 短路径 EPG URL
 # ════════════════════════════════════════════════════════════════
 
 @app.head("/epg.xml", include_in_schema=False)
@@ -2139,8 +2442,7 @@ async def short_epg_xml():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="application/xml")
     return FileResponse(str(xml_path), media_type="application/xml", headers={
-        "Cache-Control": "public, max-age=300",
-        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
     })
 
 
@@ -2156,8 +2458,7 @@ async def short_epg_gz():
     with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as gz:
         gz.write(xml_bytes)
     return Response(content=buf.getvalue(), media_type="application/gzip", headers={
-        "Cache-Control": "public, max-age=300",
-        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-store",
     })
 
 
@@ -2384,17 +2685,104 @@ async def download_unified(request: Request, filepath: str,
         },
     )
 
-
 # ════════════════════════════════════════════════════════════════
-# 生命周期
+# ⭐ 新增：EPG 数据透视 & 批量操作 
 # ════════════════════════════════════════════════════════════════
 
-@app.on_event("startup")
-async def startup():
-    scheduler.start()
+@app.get("/api/epg/pivot")
+async def epg_pivot():
+    """EPG 数据透视表：检查今日各个频道的节目单数据来源"""
+    channels = config.get_epg_channels()
+    today_str = datetime.date.today().strftime("%Y%m%d")
+    result = []
+
+    for ch in channels:
+        if not ch.get("enabled", True):
+            continue
+        name = ch.get("name", "")
+        if not name:
+            continue
+        
+        telecom_path = config.JSON_DIR / f"{config.safe_filename(name)}{config.TELECOM_EPG_SUFFIX}_{today_str}.json"
+        normal_path = config.JSON_DIR / f"{config.safe_filename(name)}_{today_str}.json"
+        
+        source = "无数据"
+        count = 0
+        path_to_read = None
+        
+        if telecom_path.exists():
+            source = "电信源"
+            path_to_read = telecom_path
+        elif normal_path.exists():
+            source = "外部源"
+            path_to_read = normal_path
+            
+        if path_to_read:
+            try:
+                with open(path_to_read, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    progs = data.get("schedules", []) or data.get("programmes", [])
+                    # 过滤掉纯占位的“暂无节目单”
+                    valid_progs = [p for p in progs if p.get("title") and p.get("title") != "暂无节目单"]
+                    count = len(valid_progs)
+                    if count == 0:
+                        source = "空数据(占位)"
+            except Exception:
+                source = "解析失败"
+                
+        result.append({
+            "name": name,
+            "tvg_id": ch.get("tvg_id", ""),
+            "source": source,
+            "count": count
+        })
+        
+    return {"data": result, "date": today_str}
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    scheduler.stop()
-    await downloader.close_client()
+@app.post("/api/epg-channels/batch-delete")
+async def batch_delete_epg_channels(data: dict = Body(...)):
+    """批量删除 EPG 频道"""
+    targets = data.get("targets", []) # 传入 logic_id 列表
+    if not isinstance(targets, list) or not targets:
+        raise HTTPException(400, "未提供要删除的频道")
+    
+    channels = config.get_epg_channels()
+    extracts = config.get_epg_extracts()
+    
+    # 过滤保留不需要删除的
+    new_channels = [ch for ch in channels if str(ch.get("logic_id", "")) not in targets]
+    if len(new_channels) == len(channels):
+        return {"success": True, "count": 0}
+        
+    config.save_epg_channels(new_channels)
+    
+    # 同步清理提取记录
+    new_extracts = [
+        e for e in extracts 
+        if str(e.get("target_logic_id", "")) not in targets and str(e.get("logic_id", "")) not in targets
+    ]
+    if len(new_extracts) != len(extracts):
+        config.save_epg_extracts(new_extracts)
+        
+    return {"success": True, "count": len(channels) - len(new_channels)}
+
+
+@app.post("/api/epg-channels/batch-toggle")
+async def batch_toggle_epg_channels(data: dict = Body(...)):
+    """批量启用/禁用 EPG 频道"""
+    targets = data.get("targets", [])
+    enabled = bool(data.get("enabled", True))
+    if not isinstance(targets, list) or not targets:
+        raise HTTPException(400, "未提供要操作的目标")
+        
+    channels = config.get_epg_channels()
+    count = 0
+    for ch in channels:
+        if str(ch.get("logic_id", "")) in targets:
+            ch["enabled"] = enabled
+            count += 1
+            
+    if count > 0:
+        config.save_epg_channels(channels)
+    return {"success": True, "count": count}

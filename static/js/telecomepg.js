@@ -2,7 +2,6 @@
  * telecomepg.js - 电信 EPG 前端逻辑
  */
 (function(){
-  // ★ 属性转义：值放入 value="..." / 双引号属性里
   function escAttr(v){
     return String(v==null?'':v)
       .replace(/&/g,'&amp;')
@@ -36,7 +35,6 @@
     });
   }
 
-  // ★ 只调整 z-index，不移动节点
   function forceShowModal(){
     var modal = document.getElementById('modal');
     if (!modal) return;
@@ -50,11 +48,9 @@
       modal.classList.remove('active');
       modal.style.zIndex = '';
     }
-    // 关掉弹窗就停掉前端轮询（后台任务本身继续跑，再次打开会自动恢复状态）
     if (window.stopTelecomKeyPolling) window.stopTelecomKeyPolling();
   }
 
-// ========== 频道列表面板 ==========
   var _tcChEdit = { editing: false, list: [], updated: '' };
 
   window.loadTelecomChannelsPage = function() {
@@ -63,7 +59,6 @@
     if (tb) tb.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:20px;color:#999">读取中...</td></tr>';
     document.getElementById('tcEditToggleBtn').style.display = '';
     document.getElementById('tcChEditBar').style.display = 'none';
-    document.getElementById('tcChReadHint').style.display = '';
     telecomLoadCachedChannels();
   };
 
@@ -107,7 +102,6 @@
     list.forEach(function(ch, i){
       var tr = document.createElement('tr');
       
-      // 1. 频道ID
       var td1 = document.createElement('td');
       if (editing) {
         var inp1 = document.createElement('input');
@@ -117,9 +111,9 @@
         td1.appendChild(inp1);
       } else {
         td1.textContent = ch.channel_id || '';
+        td1.style.wordBreak = 'break-all';
       }
 
-      // 2. 频道名称
       var td2 = document.createElement('td');
       if (editing) {
         var inp2 = document.createElement('input');
@@ -130,6 +124,7 @@
         td2.appendChild(inp2);
       } else {
         td2.textContent = ch.name || '';
+        td2.style.wordBreak = 'break-all';
         if (ch._disabled) {
           td2.style.textDecoration = 'line-through';
           td2.style.color = '#999';
@@ -143,7 +138,6 @@
         }
       }
 
-      // 3. 组播地址
       var td3 = document.createElement('td');
       if (editing) {
         var inp3 = document.createElement('input');
@@ -154,10 +148,9 @@
         td3.appendChild(inp3);
       } else {
         td3.textContent = ch.channel_url || '—';
-        td3.style.cssText = 'font-size:11px;color:#666';
+        td3.style.cssText = 'font-size:12px;color:#666;word-break:break-all;';
       }
 
-      // 4. RTSP回看地址
       var td4 = document.createElement('td');
       if (editing) {
         var inp4 = document.createElement('input');
@@ -168,12 +161,11 @@
         td4.appendChild(inp4);
       } else {
         td4.textContent = ch.rtsp_url || '—';
-        td4.style.cssText = 'font-size:11px;color:#999;word-break:break-all;';
+        td4.style.cssText = 'font-size:12px;color:#999;word-break:break-all;';
       }
 
       tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);
 
-      // 5. 操作列
       var td5 = document.createElement('td');
       td5.style.cssText = 'text-align:center;white-space:nowrap';
       if (editing) {
@@ -201,7 +193,6 @@
       tb.appendChild(tr);
     });
 
-    // 底部追加空行
     if (editing) {
       var addRow = document.createElement('tr');
       addRow.style.background = '#fafafa';
@@ -214,7 +205,6 @@
       tb.appendChild(addRow);
     }
 
-    // 恢复拖拽的列宽和顺序
     var tbl = document.getElementById('tcChannelTable');
     if (tbl) {
       if (typeof applyTableColumnOrder === 'function') applyTableColumnOrder(tbl);
@@ -227,7 +217,6 @@
     _tcChEdit.editing = true;
     document.getElementById('tcEditToggleBtn').style.display = 'none';
     document.getElementById('tcChEditBar').style.display = 'flex';
-    document.getElementById('tcChReadHint').style.display = 'none';
     telecomRenderChTable();
   };
 
@@ -235,8 +224,7 @@
     _tcChEdit.editing = false;
     document.getElementById('tcEditToggleBtn').style.display = '';
     document.getElementById('tcChEditBar').style.display = 'none';
-    document.getElementById('tcChReadHint').style.display = '';
-    telecomLoadCachedChannels(); // 丢弃未保存改动
+    telecomLoadCachedChannels();
   };
 
   window.telecomQuickAddRow = function(){
@@ -257,7 +245,7 @@
     telecomRenderChTable();
   };
 
-  window.telecomAddChRow = function(){ /* 走表格底部的空行 */ };
+  window.telecomAddChRow = function(){ };
 
   window.telecomSaveChEdit = function(ev){
     var list = _tcChEdit.list || [];
@@ -285,16 +273,13 @@
         _tcChEdit.editing = false;
         document.getElementById('tcEditToggleBtn').style.display = '';
         document.getElementById('tcChEditBar').style.display = 'none';
-        document.getElementById('tcChReadHint').style.display = '';
         telecomLoadCachedChannels();
-        if (typeof tcFetchLogs === 'function') tcFetchLogs().catch(function(){});
       }).catch(function(e){
         if (btn) { btn.disabled = false; btn.textContent = '💾 保存' }
         alert('保存失败: ' + e.message);
       });
   };
 
-// 「📺 获取频道列表 / 📺 更新频道列表」按钮仍然走这里
 window.telecomGetChannels = function(){
   tcLog('从电信服务器获取频道列表中...');
   var tb = document.querySelector('#tcChannelTable tbody');
@@ -307,8 +292,6 @@ window.telecomGetChannels = function(){
     tcLog('已刷新，共 ' + list.length + ' 个');
     
     telecomLoadCachedChannels(); 
-    
-    tcFetchLogs().catch(function(){});
   }).catch(function(e){
     tcLog('获取失败: ' + tcErrMsg(e));
     var tb = document.querySelector('#tcChannelTable tbody');
@@ -316,7 +299,6 @@ window.telecomGetChannels = function(){
   });
 };
 
-  // ========== 弹窗配置模块 ==========
   function tcBaseUrl(){
     try{ return String(location.origin||'').replace(/\/+$/,'') }catch(e){ return '' }
   }
@@ -326,7 +308,6 @@ window.telecomGetChannels = function(){
     return el ? String(el.value||'').trim() : '';
   }
 
-  // 实时预览：最终写进 m3u/txt 的 EPG 直链和台标地址
   window.updateTelecomUrlPreview = function(){
     var box = document.getElementById('mcUrlPreview');
     if (!box) return;
@@ -339,7 +320,6 @@ window.telecomGetChannels = function(){
     box.innerHTML = 'EPG 直链：<b>' + escAttr(epg) + '</b><br>台标地址：<b>' + escAttr(logoUrl) + '</b>';
   };
 
-  // 「↺ 用当前访问地址」：把两个地址都重置为浏览器当前地址
   window.fillTelecomBaseUrls = function(){
     var b = tcBaseUrl();
     if (!b) return;
@@ -348,7 +328,6 @@ window.telecomGetChannels = function(){
     window.updateTelecomUrlPreview();
   };
 
-  // ========== 反推 key（用现有 Authenticator 穷举 8 位数字） ==========
   var _keyPollTimer = null;
   var _keySearching = false;
 
@@ -375,14 +354,13 @@ window.telecomGetChannels = function(){
 
   window.stopTelecomKeySearch = function(){
     window.telecomKeyStatus('正在向后台发送停止指令，当前计算批次完成后退出…');
-    setKeyBtn('⏳ 停止中', true); // 变灰并禁用点击
+    setKeyBtn('⏳ 停止中', true); 
     tcReq('POST','find-key/stop',{}).catch(function(){});
   };
 
   window.startTelecomKeyPolling = function(){
     window.stopTelecomKeyPolling();
     _keyPollTimer = setInterval(function(){
-      // 弹窗如果被关闭，停止前端轮询，但不重置 _keySearching 状态
       if (!document.getElementById('mcFindKeyBtn')) {
         window.stopTelecomKeyPolling();
         return;
@@ -393,7 +371,6 @@ window.telecomGetChannels = function(){
         .then(function(s){
           if (s.running){
             _keySearching = true;
-            // 只有在按钮没变灰（即用户没点停止）的情况下，才更新进度文字
             var b = document.getElementById('mcFindKeyBtn');
             if (b && !b.disabled) {
               var pct = s.total ? Math.floor(s.tested * 100 / s.total) : 0;
@@ -403,7 +380,6 @@ window.telecomGetChannels = function(){
             return;
           }
           
-          // 走到这里说明后台已经彻底停止（或者找到了，或者被手动停了）
           window.stopTelecomKeyPolling();
           _keySearching = false;
           
@@ -422,7 +398,6 @@ window.telecomGetChannels = function(){
   };
 
   window.findTelecomKey = function(){
-    // 如果正在跑，再点一次 = 停止
     if (_keySearching){ 
       window.stopTelecomKeySearch(); 
       return; 
@@ -439,7 +414,6 @@ window.telecomGetChannels = function(){
       return;
     }
     
-    // 直接发请求，后端从配置文件里读取密文去跑（后台默默跑，找到自动写配置和 key.txt）
     tcReq('POST','find-key',{}).then(function(j){
       if (!j.success){ alert(j.message || '启动失败'); return; }
       _keySearching = true;
@@ -459,7 +433,6 @@ window.telecomGetChannels = function(){
       
       document.getElementById('modalTitle').textContent = '⚙️ 电信认证与EPG配置';
       document.getElementById('modalBody').innerHTML = `
-        <!-- ================= 基础参数 ================= -->
         <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">基础参数</div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
           <div class="form-group" style="flex:0 0 140px;margin-bottom:0">
@@ -477,7 +450,6 @@ window.telecomGetChannels = function(){
           </div>
         </div>
 
-        <!-- ================= 设备信息 ================= -->
         <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">设备信息</div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
           <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
@@ -514,7 +486,6 @@ window.telecomGetChannels = function(){
           </div>
         </div>
 
-        <!-- ================= 安全认证 ================= -->
         <div style="font-weight:600;color:var(--primary);margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px;font-size:14px">安全认证</div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:16px">
           <div class="form-group" style="flex:100%;margin-bottom:0">
@@ -543,7 +514,6 @@ window.telecomGetChannels = function(){
           </div>
         </div>
 
-        <!-- ================= EPG输出配置 ================= -->
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:4px">
           <span style="font-weight:600;color:var(--primary);font-size:14px">EPG输出配置</span>
           <button type="button" class="btn btn-sm" onclick="fillTelecomBaseUrls()" title="把 epg_server_url 和 logo_url 都填成当前访问地址">↺ 用当前访问地址</button>
@@ -551,7 +521,7 @@ window.telecomGetChannels = function(){
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">
           <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>epg_server_url</label><input id="mcEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateTelecomUrlPreview()"></div>
-          <div class="form-group" style="flex:1 1 120px;margin-bottom:0"><label>epgname</label><input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" oninput="updateTelecomUrlPreview()"></div>
+          <div class="form-group" style="flex:1 1 120px;margin-bottom:0"><label style="cursor:help;" title="系统固定为 epg.xml，不可修改">epgname (🔒只读)</label><input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" readonly style="background:#f5f5f5;color:#888;cursor:not-allowed;" title="系统固定为 epg.xml，不可修改"></div>
           <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>RTP2HTTPD（手工填）</label><input id="mcRtp" value="${escAttr(c.RTP2HTTPD)}" placeholder="http://192.168.1.1:5140"></div>
           <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>logo_url</label><input id="mcLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateTelecomUrlPreview()"></div>
         </div>
@@ -561,7 +531,7 @@ window.telecomGetChannels = function(){
         <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;border-top:1px dashed #ddd;padding-top:8px">
           💾 保存后写入 <code>data/config/app_config.json</code>：电信配置 + 定时任务 + 全局设置 + 外部 EPG 源都在<b>这一个文件</b>里。<br>
           💡 epg_server_url / logo_url 留空时自动用<b>当前访问地址</b>（即 <code>${escAttr(base || 'http://…')}</code>），
-          EPG 直链 = <code>地址/epgname</code>；台标 = <code>地址/api/download/频道名.png</code>。用公网域名打开本页面保存，生成的就是公网链接。<br>
+          EPG 直链 = <code>地址/epgname</code>；台标 = <code>地址/api/download/频道名.png</code>。<br>
           测试连接 / 执行认证 / 获取频道 / 下载 EPG 都只读这个文件，不再使用页面上的临时参数。
         </div>
       `;
@@ -573,7 +543,6 @@ window.telecomGetChannels = function(){
       document.getElementById('mcEnabled').value = c.enabled ? 'true' : 'false';
       window.updateTelecomUrlPreview();
 	  
-      // 查询反推任务当前状态，恢复界面
       fetch('/api/telecom/find-key/status', {credentials:'include'})
         .then(function(r){ return r.json() })
         .then(function(s){
@@ -592,7 +561,6 @@ window.telecomGetChannels = function(){
              setKeyBtn('🔍 反推', false);
           }
         }).catch(function(e){ 
-          // 静默处理：只在控制台打印，不弹窗打断用户
           console.warn('查询反推状态失败（不影响其他配置）:', e);
           _keySearching = false;
           setKeyBtn('🔍 反推', false); 
@@ -620,7 +588,6 @@ window.telecomGetChannels = function(){
     }).catch(function(e){ alert('保存失败: ' + e.message); });
   };
 
-  // ========== 实时执行日志 ==========
   var _tcLogCursor = 0, _tcLogTimer = null;
 
   function tcLogPanel(){ return document.getElementById('tcLog'); }
@@ -633,17 +600,25 @@ window.telecomGetChannels = function(){
     el.scrollTop = el.scrollHeight;
   }
 
-  function tcFetchLogs(){
-    return fetch('/api/telecom/logs?since=' + _tcLogCursor, {credentials:'include'})
-      .then(function(r){ return r.json(); })
-      .then(function(d){
-        if (d && d.logs && d.logs.length){
-          tcAppendLogs(d.logs);
-          _tcLogCursor = (typeof d.total === 'number') ? d.total : (_tcLogCursor + d.logs.length);
+function tcFetchLogs(){
+  return fetch('/api/telecom/logs?since=' + _tcLogCursor, {credentials:'include'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (typeof d.total === 'number' && d.total < _tcLogCursor) {
+        _tcLogCursor = 0;
+        if (d.logs && d.logs.length) {
+          tcAppendLogs(d.logs, true);
+          _tcLogCursor = d.total;
         }
         return d || {};
-      });
-  }
+      }
+      if (d && d.logs && d.logs.length){
+        tcAppendLogs(d.logs);
+        _tcLogCursor = (typeof d.total === 'number') ? d.total : (_tcLogCursor + d.logs.length);
+      }
+      return d || {};
+    });
+}
 
   window.refreshTelecomLog = function(){
     return fetch('/api/telecom/logs?since=0', {credentials:'include'})
@@ -679,7 +654,6 @@ window.telecomGetChannels = function(){
     return m;
   }
 
-  // ========== 快捷操作 ==========
   window.telecomTestConn = function(){ tcLog('测试连接中...'); tcReq('POST','test-connection',{}).then(j=>tcLog('结果: ' + JSON.stringify(j))).catch(e=>tcLog('失败: ' + e.message)); };
   window.telecomAuth = function(){ tcLog('认证中...'); tcReq('POST','auth',{}).then(j=>tcLog('结果: ' + JSON.stringify(j))).catch(e=>tcLog('失败: ' + e.message)); };
   window.telecomAllEpg = function(){
@@ -717,7 +691,6 @@ window.telecomGetChannels = function(){
   window.telecomGenM3U = function(){ tcReq('POST','generate-m3u',{}).then(j=>tcLog('M3U已生成')).catch(e=>tcLog('失败: ' + e.message)); };
   window.telecomStatus = function(){ tcReq('GET','status').then(j=>tcLog('状态: ' + JSON.stringify(j))).catch(e=>tcLog('失败: ' + e.message)); };
   
-  // ========== 定时任务 ==========
   function setVal(id, v){ var el = document.getElementById(id); if (el) el.value = v; }
   function getVal(id){ var el = document.getElementById(id); return el ? el.value : ''; }
 
@@ -767,7 +740,7 @@ window.telecomGetChannels = function(){
       window.tcToggleIntervalMode('tcEpg');
       var sum = document.getElementById('tcScheduleSummary');
       if (sum) sum.textContent = fmtSched('频道', ch) + ' · ' + fmtSched('EPG', ep);
-    }).catch(function(){ /* 未登录或网络异常时静默 */ });
+    }).catch(function(){ });
   };
 
   window.telecomSaveConfig = function(){

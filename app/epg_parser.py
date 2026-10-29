@@ -192,18 +192,46 @@ def get_channel_list(xml_text: str, rule: str = "auto") -> list:
         rule = detect_rule(xml_text)
 
     channels = []
+    
+    # 常见的小于等于3个字母的合法频道缩写（白名单，防止误杀）
+    _valid_short_names = {"CCTV", "CGTN", "CETV", "SCTV", "GDTV", "JSTV", "BTV", "CBS"}
+
+    def _is_valid_name(name):
+        """过滤掉明显的碎片垃圾数据"""
+        name = name.strip()
+        if not name:
+            return False
+        # 1. 长度太小（单字母如 'C'）
+        if len(name) < 2:
+            return False
+        # 2. 纯英文字母且长度 <= 3，且不在白名单里（过滤掉 'DTV', 'ABC' 等）
+        if re.match(r'^[a-zA-Z]{1,3}$', name):
+            if name.upper() not in _valid_short_names:
+                return False
+        # 3. 纯数字且长度 <= 2 （通常不是正经频道名）
+        if re.match(r'^\d{1,2}$', name):
+            return False
+            
+        return True
+
     pattern = r'<channel\s+id="([^"]+)">\s*<display-name[^>]*>(.*?)</display-name>'
     for match in re.finditer(pattern, xml_text, re.DOTALL):
-        ch_id = match.group(1)
+        ch_id = match.group(1).strip()
         name = match.group(2).strip()
-        channels.append({"id": ch_id, "name": name, "rule": rule})
+        # 名字和ID，至少要有一个看起来是正常的
+        if _is_valid_name(name) or _is_valid_name(ch_id):
+            # 如果 name 是垃圾，但 id 是好的（比如 id="CDTV8", name="C"），就把 name 重置为 id
+            if not _is_valid_name(name):
+                name = ch_id
+            channels.append({"id": ch_id, "name": name, "rule": rule})
 
     if not channels:
         # 简单模式
         pattern2 = r'<channel\s+id="([^"]+)"'
         for match in re.finditer(pattern2, xml_text):
-            ch_id = match.group(1)
-            channels.append({"id": ch_id, "name": ch_id, "rule": rule})
+            ch_id = match.group(1).strip()
+            if _is_valid_name(ch_id):
+                channels.append({"id": ch_id, "name": ch_id, "rule": rule})
 
     return channels
 

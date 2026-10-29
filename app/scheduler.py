@@ -151,6 +151,11 @@ class TaskScheduler:
         if self.current_task and not self.current_task.done():
             print("[调度] 上一个任务仍在运行，跳过")
             return
+        # ★ 与手动按钮 / 电信任务共用同一把锁：避免两份任务同时下载 EPG 源互相覆盖缓存
+        from .progress import download_progress
+        if download_progress._running:
+            logger.log("[任务] 有其他任务在运行，跳过本次定时任务", category="失败")
+            return
         self.current_task = asyncio.create_task(self._run_daily())
 
     async def _run_daily(self):
@@ -190,6 +195,8 @@ class TaskScheduler:
                              or epg_name_map.get(str(ext.get("logic_id", "") or ""))
                              or name)
 
+                # ★ 修复：与 _run_extract_to_json 一致，按 source_url 精确匹配缓存，
+                #   避免多个源都有同名频道时从错误的源里提取。
                 programmes = []
                 for cf in epg_parser.resolve_cache_files(epg_cache, ext.get("source_url", "")):
                     try:
@@ -308,16 +315,15 @@ class TaskScheduler:
                              or name)
 
                 programmes = []
-                if epg_cache.exists():
-                    for cf in sorted(epg_cache.glob("*.xml")):
-                        try:
-                            cache_text = cf.read_text(encoding="utf-8")
-                        except Exception:
-                            continue
-                        progs = epg_parser.extract_programmes(cache_text, rule, name)
-                        if progs:
-                            programmes.extend(progs)
-                            break
+                for cf in epg_parser.resolve_cache_files(epg_cache, ext.get("source_url", "")):
+                    try:
+                        cache_text = cf.read_text(encoding="utf-8")
+                    except Exception:
+                        continue
+                    progs = epg_parser.extract_programmes(cache_text, rule, name)
+                    if progs:
+                        programmes.extend(progs)
+                        break
 
                 date_progs = defaultdict(list)
                 for prog in programmes:

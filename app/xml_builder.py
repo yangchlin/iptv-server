@@ -116,7 +116,12 @@ def build_xml(
             added_channels.add(tvg_id)
 
             lines.append(f' <channel id="{_escape_xml(tvg_id)}">')
-            lines.append(f'  <display-name lang="zh">{_escape_xml(ch.get("tvg_name", name))}</display-name>')
+            # ★ 修改：支持逗号/斜杠分隔的多个频道名
+            tvg_name_str = str(ch.get("tvg_name", name) or "")
+            for dn in re.split(r'[,，|/]', tvg_name_str):
+                dn = dn.strip()
+                if dn:
+                    lines.append(f'  <display-name lang="zh">{_escape_xml(dn)}</display-name>')
             lines.append(' </channel>')
             channel_count += 1
 
@@ -169,16 +174,6 @@ def build_xml(
                 ch_with_data += 1
             else:
                 ch_without_data += 1
-                for d in date_range:
-                    for hour in range(24):
-                        start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                        end_dt = start_dt + datetime.timedelta(minutes=30)
-                        start_str = start_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                        end_str = end_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                        lines.append(f' <programme channel="{_escape_xml(tvg_id)}" start="{start_str}" stop="{end_str}">')
-                        lines.append('  <title lang="zh">暂无节目单</title>')
-                        lines.append(' </programme>')
-                        programme_count += 1
 
             if idx % 10 == 0 or idx == total_epg:
                 if log_callback:
@@ -192,24 +187,6 @@ def build_xml(
                 f"[XML] 频道处理完成: {ch_with_data} 个有节目, {ch_without_data} 个无数据, "
                 f"JSON文件: 找到{json_found}个, 解析成功{json_parsed}个, 失败{json_errors}个"
             )
-
-        # 占位频道 9999
-        if "9999" not in added_channels:
-            lines.append(' <channel id="9999">')
-            lines.append('  <display-name lang="zh">暂无节目单</display-name>')
-            lines.append(' </channel>')
-            channel_count += 1
-
-            for d in date_range:
-                for hour in range(24):
-                    start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                    end_dt = start_dt + datetime.timedelta(minutes=30)
-                    start_str = start_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                    end_str = end_dt.strftime("%Y%m%d%H%M00") + " +0800"
-                    lines.append(f' <programme channel="9999" start="{start_str}" stop="{end_str}">')
-                    lines.append('  <title lang="zh">暂无节目单</title>')
-                    lines.append(' </programme>')
-                    programme_count += 1
 
         lines.append('</tv>')
 
@@ -305,7 +282,12 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
             added.add(name)
 
             lines.append(f' <channel id="{_escape_xml(name)}">')
-            lines.append(f'  <display-name lang="zh">{_escape_xml(name)}</display-name>')
+            # ★ 修改开始：支持多个别名
+            for dn in re.split(r'[,，|/]', name):
+                dn = dn.strip()
+                if dn:
+                    lines.append(f'  <display-name lang="zh">{_escape_xml(dn)}</display-name>')
+            # ★ 修改结束
             lines.append(' </channel>')
             channel_count += 1
 
@@ -349,20 +331,6 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
                     ch_progs += 1
 
             # 该频道一条节目都没有：补占位，避免播放器拿到空频道
-            if ch_progs == 0:
-                for d in date_range:
-                    for hour in range(24):
-                        start_dt = datetime.datetime.combine(d, datetime.time(hour, 0))
-                        end_dt = start_dt + datetime.timedelta(minutes=30)
-                        lines.append(
-                            f' <programme channel="{_escape_xml(name)}" '
-                            f'start="{start_dt.strftime("%Y%m%d%H%M00")} +0800" '
-                            f'stop="{end_dt.strftime("%Y%m%d%H%M00")} +0800">'
-                        )
-                        lines.append('  <title lang="zh">暂无节目单</title>')
-                        lines.append(' </programme>')
-                        programme_count += 1
-                        placeholder_count += 1
 
         lines.append('</tv>')
         xml_content = "\n".join(lines) + "\n"
