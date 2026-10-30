@@ -213,14 +213,23 @@ def build_xml(
             except OSError:
                 pass
 
-        # 备份到 SHARE_DIR
-        share_path = config.SHARE_DIR / "epg.xml"
+        # 备份到 SHARE_DIR（同时保留普通 XML 和 GZ 压缩包）
         try:
-            share_path.parent.mkdir(parents=True, exist_ok=True)
+            config.SHARE_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # 1. 备份未压缩的 epg.xml
+            share_path = config.SHARE_DIR / "epg.xml"
             tmp_share = share_path.parent / "epg.xml.tmp"
             with open(tmp_share, "w", encoding="utf-8", newline="\n") as f:
                 f.write(xml_content)
             os.replace(str(tmp_share), str(share_path))
+            
+            # 2. 备份压缩后的 epg.xml.gz（复用前面已经生成的 gz_buf）
+            share_gz_path = config.SHARE_DIR / "epg.xml.gz"
+            tmp_share_gz = share_gz_path.parent / "epg.xml.gz.tmp"
+            tmp_share_gz.write_bytes(gz_buf.getvalue())
+            os.replace(str(tmp_share_gz), str(share_gz_path))
+            
         except OSError:
             pass
 
