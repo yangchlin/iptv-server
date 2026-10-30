@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 """3DES/DES 加密工具（完美规避新版加密库退化报错）"""
-import datetime
 import logging
 import os
 import sys

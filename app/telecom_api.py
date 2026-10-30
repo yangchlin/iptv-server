@@ -21,6 +21,7 @@ from . import config
 from . import xml_builder
 from .crypt_1 import find_key_parallel
 from .logger import logger
+from .tasks import spawn
 from .scheduler import scheduler
 from .progress import download_progress          # ★ 修复：从独立模块导入，避免 NameError
 from .telecom_epg import (
@@ -427,7 +428,7 @@ def _run_key_search(auth_hex: str, max_iters: int, workers: int) -> None:
             f"该 KEY 已自动写入配置文件 app_config.json。\n",
             encoding="utf-8",
         )
-        telecom_log(f"📄 已将结果保存至日志目录的 key.txt")
+        telecom_log("📄 已将结果保存至日志目录的 key.txt")
     except Exception as e:
         telecom_log(f"⚠️ 保存 key.txt 失败: {e}")
 
@@ -697,7 +698,7 @@ async def download_all_epg_api(request: Request, data: dict = Body(...)):
     download_progress.clear()
     telecom_log("任务已接收，准备开始...")
 
-    asyncio.create_task(_run_telecom_epg_task(config_data, days, force, auto_fetch))
+    spawn(_run_telecom_epg_task(config_data, days, force, auto_fetch))
     return {"success": True, "message": "电信EPG任务已启动，进度看下方执行日志"}
 
 

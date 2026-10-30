@@ -45,6 +45,9 @@ _PRIVATE_NETS = [
 # 全局 HTTP 客户端
 _client: Optional[httpx.AsyncClient] = None
 
+# EPG 下载失败记录：{url: {url, remark, error, ts}}，供前端红点 / 告警使用
+_epg_failures: dict = {}
+
 def get_epg_failures() -> list:
     """返回失败列表副本（供路由读取）。"""
     return [
@@ -67,8 +70,6 @@ def get_client() -> httpx.AsyncClient:
     global _client
     if _client is None:
         _client = httpx.AsyncClient(
-            # 连接超时 10s：源不可达时快速失败，不用干等 30s
-            # 读取超时 60s：EPG 大文件下载留足时间
             timeout=httpx.Timeout(60.0, connect=10.0),
             follow_redirects=True,
             headers={
@@ -76,6 +77,7 @@ def get_client() -> httpx.AsyncClient:
                 "Accept": "*/*",
             },
             limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+            verify=False # ★ 新增：忽略 SSL 证书校验，兼容各类私有 EPG 源
         )
     return _client
 
@@ -366,12 +368,12 @@ async def _fetch_epg_raw(url: str):
                 return None, f"文件超过 {_EPG_MAX_BYTES // 1024 // 1024}MB 上限"
             return raw, ""
     except httpx.HTTPStatusError as e:
-        return None, f"HTTP {e.response.status_code}"
+        return None, f"HTTP {e.response.status_code}（源地址错误或拒绝访问）"
     except httpx.TimeoutException:
         return None, "超时：服务器 30 秒内没有响应（网络不通或该源太慢）"
     except httpx.RequestError as e:
         detail = str(e) or type(e).__name__
-        return None, f"请求失败: {detail}"
+        return None, f"请求失败: {detail}（可能被墙/证书错误）"
     except Exception as e:
         return None, f"未知错误: {e}"
 
@@ -410,16 +412,13 @@ async def download_epg_source(source: dict,
         # ── 带重试的抓取（只对超时/网络/5xx 重试）──
         raw, err = None, ""
         for attempt in range(max_retries + 1):
-            raw, err = await _fetch_epg_raw(url)
-            if raw is not None:
-                break
-            retriable = ("超时" in err) or ("请求失败" in err) or ("HTTP 5" in err)
-            if attempt < max_retries and retriable:
-                if log_callback:
-                    log_callback(
-                        f"[下载] EPG源({index}/{total}) 第 {attempt + 1} 次失败"
-                        f"（{err}），{2 * (attempt + 1)} 秒后重试…"
-                    )
+            try:
+                # ★ 强制 45 秒超时，不响应直接断开报错
+                raw, err = await asyncio.wait_for(_fetch_epg_raw(url), timeout=45.0)
+            except asyncio.TimeoutError:
+                raw, err = None, "超时（服务器 45 秒未响应）"
+            if raw is not None: break
+            if attempt < max_retries:
                 await asyncio.sleep(2 * (attempt + 1))
                 continue
             break

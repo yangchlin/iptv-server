@@ -518,12 +518,31 @@ function startDownloadMonitor(){
 async function pollDownloadProgress(){
  try{
   const r=await fetch('/api/download/progress');const d=await r.json()
-  if(!d.running&&downloading){
+  if(!d.running && downloading){
    downloading=false
    if(downloadAutoRefresh){clearInterval(downloadAutoRefresh);downloadAutoRefresh=null}
-   showToast('下载任务已完成','success')
+   
+   const msgs = d.messages || []
+   let isError = false
+   let errMsg = ''
+   for(let i=msgs.length-1; i>=0; i--) {
+      if(msgs[i].includes('❌') || msgs[i].includes('失败') || msgs[i].includes('出错') || msgs[i].includes('超时')) {
+          isError = true
+          errMsg = msgs[i].replace(/^\[[^\]]+\]\s*/, '')
+          break
+      }
+   }
+   
+   if(isError){
+       showToast('下载未完成：' + errMsg, 'error', 8000)
+       if(typeof pollEpgFailures === 'function') pollEpgFailures()
+   } else {
+       showToast('下载任务已完成，缓存已刷新', 'success')
+   }
+   
    loadChannels()
    loadEpgSources()
+   refreshEpgPickSummary()
   }
  }catch(e){}
 }
@@ -625,46 +644,47 @@ function renderEpgSources(){
  if(epgSourcePage>totalPages)epgSourcePage=totalPages
  const start=(epgSourcePage-1)*EPG_SOURCE_PAGE_SIZE
  const page=epgSources.slice(start,start+EPG_SOURCE_PAGE_SIZE)
- if(!total){tbody.innerHTML='<tr><td colspan="8" class="empty">暂无 EPG 源 —— 点「➕ 添加源」，或直接编辑 <code>data/config/app_config.json</code> 里的 <code>epg_sources</code></td></tr>';$('epgSourcePagination').innerHTML='';return}
+ if(!total){tbody.innerHTML='<tr><td colspan="8" class="empty">暂无 EPG 源</td></tr>';$('epgSourcePagination').innerHTML='';return}
  tbody.innerHTML=page.map((s,i)=>{
   const realIdx=start+i
+  const failure = (typeof _epgFailures !== 'undefined') ? _epgFailures.find(f => f.url === s.url) : null
+  let statusHtml = ''
+  let titleHtml = ''
+  
+  if (s.parked) {
+      statusHtml = '<span class="badge badge-danger">已挂起</span>'
+  } else if (s.downloaded) {
+      statusHtml = '<span class="badge badge-success">已下载</span>'
+  } else {
+      if (failure) {
+          statusHtml = '<span class="badge badge-danger" style="cursor:help">未下载 ❌</span>'
+          titleHtml = `title="原因: ${escapeHtml(failure.error)}"`
+      } else {
+          statusHtml = '<span class="badge badge-danger">未下载</span>'
+      }
+  }
+
   return `<tr draggable="true"
     ondragstart="epgSrcDragStart(event,${realIdx})"
     ondrop="epgSrcDrop(event,${realIdx})"
     ondragover="event.preventDefault()">
    <td style="cursor:grab;text-align:center">☰</td>
-   
-   <!-- URL 列 -->
    <td style="word-break:break-all;" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</td>
-   
-   <!-- 备注列 -->
    <td><input value="${escapeHtml(s.remark||'')}" style="border:none;background:transparent;width:100%" onchange="updateEpgSourceRemark(${realIdx},this.value)"></td>
-   
-   <!-- 规则列 -->
    <td style="text-align:center"><span class="badge badge-success">${escapeHtml(s.rule||'auto')}</span></td>
-   
-   <!-- 缓存文件列 -->
-   <td style="color:var(--text-secondary);word-break:break-all;" title="缓存文件：${escapeHtml(s.cache_file||s.cache_target||s.cache_name||'—')}">
-     ${escapeHtml(s.cache_file||s.cache_target||s.cache_name||'—')}
+   <td style="color:var(--text-secondary);word-break:break-all;" title="${escapeHtml(s.cache_file||s.cache_target||'')}">
+     ${escapeHtml(s.cache_file||s.cache_target||'—')}
    </td>
-   
-   <!-- 状态列 -->
-   <td style="text-align:center">
-     ${s.parked ? '<span class="badge badge-danger">已挂起</span>' : 
-       (s.downloaded ? '<span class="badge badge-success">已下载</span>' : '<span class="badge badge-danger">未下载</span>')}
-   </td>
-   
-   <!-- 开关列 -->
-   <td style="text-align:center"><button class="badge ${s.enabled!==false?'badge-success':'badge-danger'}" style="border:0;cursor:pointer" onclick="toggleEpgSource(${realIdx})" title="点击切换 启用 / 禁用">${s.enabled!==false?'启用':'禁用'}</button></td>
-   
-   <!-- 操作列 -->
+   <td style="text-align:center" ${titleHtml}>${statusHtml}</td>
+   <td style="text-align:center"><button class="badge ${s.enabled!==false?'badge-success':'badge-danger'}" style="border:0;cursor:pointer" onclick="toggleEpgSource(${realIdx})">${s.enabled!==false?'启用':'禁用'}</button></td>
    <td style="text-align:center;">
-   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})" title="下载该源（下载后自动合并，状态会变为已下载）">⬇️</button>
+   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})" title="下载该源">⬇️</button>
    <button class="btn btn-sm" onclick="editEpgSource(${realIdx})">✏️</button>
    <button class="btn btn-sm btn-danger" onclick="deleteEpgSource(${realIdx})">✕</button>
    </td>
   </tr>`
  }).join('')
+ 
  const pag=$('epgSourcePagination')
  pag.innerHTML=`<span style="font-size:11px;color:var(--text-secondary);margin-right:8px">共${total}条</span>
   <button onclick="epgSourcePage=1;renderEpgSources()" ${epgSourcePage<=1?'disabled':''}>«</button>
@@ -3472,91 +3492,6 @@ function exportOverviewCsv(){
  document.body.appendChild(a); a.click(); document.body.removeChild(a)
  URL.revokeObjectURL(a.href)
  showToast('已导出 CSV','success')
-}
-
-async function showEpgPivot() {
-  showToast('正在统计今日节目单数据...', 'info');
-  try {
-    const r = await fetch('/api/epg/pivot');
-    const d = await r.json();
-    const rows = d.data || [];
-    
-    let html = `<div style="max-height:60vh;overflow:auto"><table class="table" style="width:100%">
-      <thead><tr><th>频道名</th><th>TVG-ID</th><th>数据来源</th><th>节目数量</th></tr></thead>
-      <tbody>`;
-      
-    rows.forEach(x => {
-      let badge = 'badge-danger';
-      if (x.source === '电信源') badge = 'badge-success';
-      else if (x.source === '外部源') badge = 'badge-warning';
-      else if (x.source === '空数据(占位)') badge = 'badge-secondary';
-      
-      html += `<tr>
-        <td>${escapeHtml(x.name)}</td>
-        <td>${escapeHtml(x.tvg_id)}</td>
-        <td><span class="badge ${badge}">${x.source}</span></td>
-        <td style="text-align:center;font-weight:bold;color:${x.count>0?'#52c41a':'#ff4d4f'}">${x.count}</td>
-      </tr>`;
-    });
-    
-    if (!rows.length) html += '<tr><td colspan="4" style="text-align:center">暂无数据</td></tr>';
-    html += '</tbody></table></div>';
-    
-    $('modalTitle').textContent = `📊 EPG 数据透视 (${d.date})`;
-    $('modalBody').innerHTML = html;
-    $('modalActions').innerHTML = `<button class="btn" onclick="closeModal()">关闭</button>`;
-    $('modal').classList.add('active');
-  } catch(e) {
-    showToast('获取透视数据失败: ' + e.message, 'error');
-  }
-}
-
-// 勾选全选
-function toggleAllEpgCh(checked) {
-  const boxes = document.querySelectorAll('.epg-ch-cb');
-  boxes.forEach(b => b.checked = checked);
-}
-
-// 收集选中的 Logic ID
-function getSelectedEpgChIds() {
-  const boxes = document.querySelectorAll('.epg-ch-cb:checked');
-  return Array.from(boxes).map(b => b.getAttribute('data-lid'));
-}
-
-async function batchDeleteEpgCh() {
-  const targets = getSelectedEpgChIds();
-  if (!targets.length) return showToast('请先勾选要删除的频道', 'error');
-  if (!await customConfirm(`确定要批量删除选中的 ${targets.length} 个频道吗？\n（同步删除关联的提取记录）`)) return;
-  
-  try {
-    const r = await fetch('/api/epg-channels/batch-delete', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ targets })
-    });
-    const d = await r.json();
-    if (d.success) {
-      showToast(`已删除 ${d.count} 个频道`, 'success');
-      await loadEpgChannels();
-      if (document.getElementById('epgChSelectAll')) document.getElementById('epgChSelectAll').checked = false;
-    }
-  } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
-}
-
-async function batchToggleEpgCh(enabled) {
-  const targets = getSelectedEpgChIds();
-  if (!targets.length) return showToast('请先勾选要操作的频道', 'error');
-  
-  try {
-    const r = await fetch('/api/epg-channels/batch-toggle', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ targets, enabled })
-    });
-    const d = await r.json();
-    if (d.success) {
-      showToast(`已${enabled?'启用':'禁用'} ${d.count} 个频道`, 'success');
-      await loadEpgChannels();
-    }
-  } catch(e) { showToast('操作失败: ' + e.message, 'error'); }
 }
 
 async function init(){
