@@ -219,6 +219,7 @@ class RtspProxy:
                     self._connections.remove(client)
 
     # ── 握手阶段 ──
+    # ── 握手阶段 ──
     def _handshake(self, client: socket.socket, upstream: socket.socket,
                    addr) -> Optional[socket.socket]:
         location = ""
@@ -231,54 +232,76 @@ class RtspProxy:
             req = _recv_message(client)
             if not req:
                 return upstream
+            
             method = req.split(b" ", 1)[0].strip().upper()
             client_host, client_port = _url_host_port(req, default_port=client_port)
 
-            # ★ 核心修复：如果是重定向后的请求
+            # 如果已经知道了边缘节点地址，之后的请求（SETUP, PLAY）直接发给边缘节点
             if location:
                 req_text = req.decode("utf-8", "replace")
-                # 提取客户端原始请求里的时间参数 (playseek=xxxx-xxxx)
                 m = re.search(r'playseek=(\d{14})-(\d{14})', req_text)
-                time_params = ""
                 if m:
                     start, end = m.group(1), m.group(2)
                     time_params = f"programbegin={start}+08&programend={end}+08"
-                
-                # 把时间参数拼接回边缘节点的 Location 里
-                if time_params:
-                    if "?" in location:
-                        new_location = f"{location}&{time_params}"
-                    else:
-                        new_location = f"{location}?{time_params}"
                 else:
-                    new_location = location
+                    time_params = ""
                 
-                # 替换请求行
-                req = _set_request_url(req, new_location)
-                # 注意：不再调用 _translate_request，因为 location 已经是边缘节点格式
+                sep = "&" if "?" in location else "?"
+                new_url = f"{location}{sep}{time_params}" if time_params else location
+                req = _set_request_url(req, new_url)
+                req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
             else:
-                # 第一次请求：发送给中心服务器，并翻译路径
+                # 第一次请求（DESCRIBE）：发给中心服务器
                 req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
                 req = _translate_request(req)
 
-            # 发送请求并获取响应
             resp = _exchange(upstream, req)
             if not resp:
                 self.log("服务器无响应，关闭连接")
                 return upstream
 
-            # 第一次响应如果没有 session，说明需要跟随重定向
-            if round_no == 1 and b"session:" not in resp.lower():
-                new = self._follow_redirect(upstream, req, bad_server)
-                if new:
-                    upstream, resp, target_host, target_port, location = new
-                    self.log(f"已改连边缘节点 {target_host}:{target_port}")
+            # ★ 核心修复：如果在中心服务器收到了 302 重定向
+            if not location and resp.startswith(b"RTSP/1.0 302"):
+                location = _get_location(resp)
+                th, tp = _url_host_port_from_text(location)
+                if th and (not bad_server or th != bad_server):
+                    self.log(f"收到重定向，改连边缘节点 {th}:{tp}")
+                    target_host, target_port = th, tp
+                    try:
+                        upstream.close()
+                        # 立刻连接到边缘节点
+                        upstream = socket.create_connection((target_host, target_port), timeout=10)
+                        
+                        # 把刚才的请求组装上时间参数，重新发给边缘节点
+                        req_text = req.decode("utf-8", "replace")
+                        m = re.search(r'playseek=(\d{14})-(\d{14})', req_text)
+                        if m:
+                            start, end = m.group(1), m.group(2)
+                            time_params = f"programbegin={start}+08&programend={end}+08"
+                        else:
+                            time_params = ""
+                        sep = "&" if "?" in location else "?"
+                        new_url = f"{location}{sep}{time_params}" if time_params else location
+                        
+                        # 替换 URL 和 Host 发给边缘节点
+                        new_req = _set_request_url(req, new_url)
+                        new_req = _rewrite_host(new_req, f"rtsp://{target_host}:{target_port}")
+                        
+                        # 获取边缘节点的 200 OK 响应
+                        resp = _exchange(upstream, new_req)
+                        if not resp:
+                            self.log("边缘节点无响应")
+                            return upstream
+                    except OSError as e:
+                        self.log(f"连接边缘节点失败: {e}")
+                        return upstream
 
+            # 把最终的 200 OK 响应发给客户端
             to_client = _rewrite_response(resp, client_host, client_port)
             client.sendall(to_client)
 
-            # PLAY 之后开始转发流数据
-            if method == b"PLAY":
+            # PLAY 的响应发完，就可以开始透传数据了
+            if method == b"PLAY" and resp.startswith(b"RTSP/1.0 200"):
                 break
 
         self.log("握手完成，开始转发流数据")
