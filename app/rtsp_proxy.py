@@ -234,18 +234,10 @@ class RtspProxy:
             method = req.split(b" ", 1)[0].strip().upper()
             client_host, client_port = _url_host_port(req, default_port=client_port)
 
-            # ★ 顺序很重要：先按 Location 替换目标地址，再做协议翻译（与原始脚本一致），
-            #   否则 PLTV/smil 会被翻译完又被 Location 原样覆盖回去。
-            if location:
-                req = _set_request_url(req, location)
-            else:
-                req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
+            # ★ 核心修复：只替换 Host 为边缘节点，不能直接用 Location 覆盖整个 URL，
+            # 否则 AuthInfo、programbegin 等参数会丢失，导致服务器播十几秒后掐断流！
+            req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
             req = _translate_request(req)
-
-            resp = _exchange(upstream, req)
-            if not resp:
-                self.log("服务器无响应，关闭连接")
-                return upstream
 
             if round_no == 1 and b"session:" not in resp.lower():
                 new = self._follow_redirect(upstream, req, bad_server)
@@ -456,18 +448,19 @@ def _to_describe(request: bytes) -> bytes:
 
 
 def _translate_request(request: bytes) -> bytes:
-    """中兴回看 / 直播地址翻译（与原始 rtspsproxy.py 的 Translator 一致）。"""
+    """中兴回看 / 直播地址翻译。"""
     text = request.decode("utf-8", "replace")
     if "playseek" in text:
+        # 将播放器请求的 PLTV/xxx.smil 翻译成服务器要的 live/xxx.sdp
+        text = text.replace("/PLTV/", "/live/").replace(".smil?", ".sdp?")
+        
+        # 将 playseek=xxxx-yyyy 翻译成 programbegin=xxxx+08&programend=yyyy+08
         m = re.search(r'playseek=\d{14}-\d{14}', text)
-        seek = m.group(0) if m else ""
-        if seek:
+        if m:
+            seek = m.group(0)
             program = seek.replace("playseek", "programbegin").replace("-", "+08&programend=") + "+08"
-            text = (text.replace("TVOD", "live")
-                        .replace("smil?", "mpg?vcdnid=001&boid=001&contname=&")
-                        .replace(seek, program))
-    else:
-        text = text.replace("PLTV", "live").replace("smil", "sdp?vcdnid=001")
+            text = text.replace(seek, program)
+    
     return text.encode("utf-8")
 
 
