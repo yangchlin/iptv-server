@@ -689,28 +689,74 @@ def _looks_signed(url: str) -> bool:
                                   "guardencrypt="))
 
 
-def zte_catchup_url(ch: Dict[str, Any], cfg: Dict[str, Any]) -> str:
-    """回看地址：优先完整签名的 TimeShiftURL，其次 ChannelSDP + 代理。
+def _build_proxy_catchup(source_url: str, replay_proxy: str) -> str:
+    """把带签名的 live/sdp 地址改造成「播放器能识别回看」的 PLTV/smil 地址。
+    
+    保留全部签名参数（AuthInfo / stbid / userid / bitrate …），只做三件事：
+      1. host 换成 replay_proxy（本机代理）
+      2. 路径 live/xxx.sdp → PLTV/xxx.smil（播放器靠这个触发回看）
+      3. 时间参数换成 playseek=${(b)…}-${(e)…}（代理靠它翻译成 programbegin/programend）
+    """
+    s = str(source_url or "").strip()
+    if not s.lower().startswith("rtsp://"):
+        return ""
 
-    规则（与抓包/原始脚本一致）：
-    1. 有 TimeShiftURL 且没被手工改过 → 直接用它（带 AuthInfo，服务器认这个），
-       只补 playseek + programend；存在即视为可回看，不再看 TimeShift 标志。
-    2. rtsp_url 被手工改成别的签名地址 → 用 rtsp_url。
-    3. 无签名回退：必须 TimeShift == "1"，用 ChannelSDP(rtsp) 拼 /PLTV/xxx.smil，
-       走 replay_proxy（原始脚本的方案，playseek 用 “-” 区间格式）。
+    # 提取 host、path、query
+    m = re.match(r'(rtsp://[^/]+)(/[^?]*)?(\?.*)?$', s)
+    if not m:
+        return ""
+    _old_host, path, query = m.group(1), m.group(2) or "", m.group(3) or ""
+
+    # 路径：live/xxx.sdp → PLTV/xxx.smil
+    path = re.sub(r'/live/([^/]+?)\.(?:sdp|smil)$',
+                  r'/PLTV/\1.smil', path, flags=re.IGNORECASE)
+    # 如果不是 /live/ 开头（比如已经是 /PLTV/），保持原样
+    if not path.startswith("/PLTV/") and not path.startswith("/live/"):
+        tail = path.rsplit("/", 1)[-1]
+        if tail:
+            stem = re.sub(r'\.(sdp|smil)$', '', tail, flags=re.IGNORECASE)
+            path = f"/PLTV/{stem}.smil"
+
+    # 去掉旧的时间参数，保留签名参数
+    query = query.lstrip("?")
+    query = re.sub(r'(^|&)(?:playseek|programbegin|programend)=[^&]*',
+                   '', query, flags=re.IGNORECASE).strip("&")
+
+    proxy_host = replay_proxy if "://" in replay_proxy else f"rtsp://{replay_proxy}"
+    proxy_host = proxy_host.rstrip("/")
+
+    base = f"{proxy_host}{path}"
+    return f"{base}?{query}&{_PLAYSEEK_PROXY}" if query else f"{base}?{_PLAYSEEK_PROXY}"
+
+def zte_catchup_url(ch: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    """回看地址。
+
+    优先顺序：
+    1. 配了 replay_proxy → 强制走代理方案（PLTV/smil + playseek + 保留签名）
+       —— 这是唯一能让酷9 / TVBox 正常回看的方案
+    2. 没配代理，但有完整签名 TimeShiftURL → 直接用（programbegin/programend）
+       —— 只有少数能直接识别 live 回看的播放器才用得上
+    3. 无签名回退（ChannelSDP + TimeShift==1）→ 走代理 playseek 方案
     """
     rtsp = str(ch.get("rtsp_url", "") or "").strip()
     ts = str(ch.get("timeshift_url", "") or "").strip()
+    replay_proxy = str(cfg.get("replay_proxy", "") or "").strip().rstrip("/")
 
-    # 1) TimeShiftURL 优先（完整签名回看 URL）
+    # 1) 配了代理：优先走代理方案
+    if replay_proxy:
+        source_url = ts or rtsp
+        if source_url.lower().startswith("rtsp://"):
+            proxy_url = _build_proxy_catchup(source_url, replay_proxy)
+            if proxy_url:
+                return proxy_url
+
+    # 2) 没配代理：直接用完整签名 TimeShiftURL
     if ts and (not rtsp or rtsp == ts):
         return _append_playseek(ts)
-
-    # 2) 手工编辑过 rtsp_url，且本身已经是签名地址
     if rtsp and _looks_signed(rtsp):
         return _append_playseek(rtsp)
 
-    # 3) 无签名回退：ChannelSDP(rtsp) + TimeShift==1
+    # 3) 无签名回退：必须 TimeShift == "1"
     if str(ch.get("timeshift", "") or "").strip() != "1":
         return ""
     if not rtsp.lower().startswith("rtsp://"):
@@ -719,8 +765,6 @@ def zte_catchup_url(ch: Dict[str, Any], cfg: Dict[str, Any]) -> str:
         return ""
 
     suffix = _replay_suffix(rtsp)
-    replay_proxy = str(cfg.get("replay_proxy", "") or "").strip().rstrip("/")
-
     if replay_proxy:
         base = replay_proxy + suffix if suffix else rtsp.split("?")[0]
     else:
