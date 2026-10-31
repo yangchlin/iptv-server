@@ -234,16 +234,40 @@ class RtspProxy:
             method = req.split(b" ", 1)[0].strip().upper()
             client_host, client_port = _url_host_port(req, default_port=client_port)
 
-            # ★ 核心修复：只替换 Host 为边缘节点，不能直接用 Location 覆盖整个 URL，
-            # 否则 AuthInfo、programbegin 等参数会丢失，导致服务器播十几秒后掐断流！
-            req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
-            req = _translate_request(req)
+            # ★ 核心修复：如果是重定向后的请求
+            if location:
+                req_text = req.decode("utf-8", "replace")
+                # 提取客户端原始请求里的时间参数 (playseek=xxxx-xxxx)
+                m = re.search(r'playseek=(\d{14})-(\d{14})', req_text)
+                time_params = ""
+                if m:
+                    start, end = m.group(1), m.group(2)
+                    time_params = f"programbegin={start}+08&programend={end}+08"
+                
+                # 把时间参数拼接回边缘节点的 Location 里
+                if time_params:
+                    if "?" in location:
+                        new_location = f"{location}&{time_params}"
+                    else:
+                        new_location = f"{location}?{time_params}"
+                else:
+                    new_location = location
+                
+                # 替换请求行
+                req = _set_request_url(req, new_location)
+                # 注意：不再调用 _translate_request，因为 location 已经是边缘节点格式
+            else:
+                # 第一次请求：发送给中心服务器，并翻译路径
+                req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
+                req = _translate_request(req)
 
+            # 发送请求并获取响应
             resp = _exchange(upstream, req)
             if not resp:
                 self.log("服务器无响应，关闭连接")
                 return upstream
 
+            # 第一次响应如果没有 session，说明需要跟随重定向
             if round_no == 1 and b"session:" not in resp.lower():
                 new = self._follow_redirect(upstream, req, bad_server)
                 if new:
@@ -253,12 +277,10 @@ class RtspProxy:
             to_client = _rewrite_response(resp, client_host, client_port)
             client.sendall(to_client)
 
-            # PLAY 之后服务器会开始发 RTP 交织数据，必须立刻转入原样转发；
-            # 之前的 OPTIONS / DESCRIBE / SETUP（多音轨可能有多个）继续按规则改写。
+            # PLAY 之后开始转发流数据
             if method == b"PLAY":
                 break
 
-        # 握手完成：原样双向转发（含 RTP 交织数据）
         self.log("握手完成，开始转发流数据")
         _relay(client, upstream, self)
         return upstream
