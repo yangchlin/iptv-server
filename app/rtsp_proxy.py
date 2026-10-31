@@ -314,47 +314,47 @@ class RtspProxy:
         _relay(client, upstream, self)
         return upstream
 
-    def _follow_redirect(self, upstream: socket.socket, first_req: bytes,
-                         bad_server: str):
-        """首次响应不含 Session 时，主动发 DESCRIBE 拿重定向地址并连过去。"""
-        describe = _to_describe(first_req)
-        resp = _exchange(upstream, describe)
-        if not resp:
-            return None
-        location = _get_location(resp)
-        target_host, target_port = _url_host_port_from_text(location or resp.decode("utf-8", "replace"))
-        if not target_host:
-            self.log("响应里没有可用的重定向地址，继续使用原服务器")
-            return None
-        if bad_server and target_host == bad_server:
-            self.log(f"重定向目标 {target_host} 在黑名单里，放弃")
-            return None
-        try:
-            new_sock = socket.create_connection((target_host, target_port), timeout=10)
-        except OSError as e:
-            self.log(f"连接边缘节点失败: {e}")
-            return None
-        options_req = (
-            f"OPTIONS {location} RTSP/1.0\r\n"
-            f"CSeq: 1\r\n"
-            f"User-Agent: {DEFAULT_UA}\r\n\r\n"
-        ).encode("utf-8")
-        try:
-            new_resp = _exchange(new_sock, options_req)
-        except OSError as e:
-            self.log(f"边缘节点请求失败: {e}")
-            new_resp = b""
-        if not new_resp:
-            try:
-                new_sock.close()
-            except OSError:
-                pass
-            return None
-        try:
-            upstream.close()
-        except OSError:
-            pass
-        return new_sock, new_resp, target_host, target_port, location
+#    def _follow_redirect(self, upstream: socket.socket, first_req: bytes,
+#                         bad_server: str):
+#        """首次响应不含 Session 时，主动发 DESCRIBE 拿重定向地址并连过去。"""
+#        describe = _to_describe(first_req)
+#        resp = _exchange(upstream, describe)
+#        if not resp:
+#            return None
+#        location = _get_location(resp)
+#        target_host, target_port = _url_host_port_from_text(location or resp.decode("utf-8", "replace"))
+#        if not target_host:
+#            self.log("响应里没有可用的重定向地址，继续使用原服务器")
+#            return None
+#        if bad_server and target_host == bad_server:
+#            self.log(f"重定向目标 {target_host} 在黑名单里，放弃")
+#            return None
+#        try:
+#            new_sock = socket.create_connection((target_host, target_port), timeout=10)
+#        except OSError as e:
+#            self.log(f"连接边缘节点失败: {e}")
+#            return None
+#        options_req = (
+#            f"OPTIONS {location} RTSP/1.0\r\n"
+#            f"CSeq: 1\r\n"
+#            f"User-Agent: {DEFAULT_UA}\r\n\r\n"
+#        ).encode("utf-8")
+#        try:
+#            new_resp = _exchange(new_sock, options_req)
+#        except OSError as e:
+#            self.log(f"边缘节点请求失败: {e}")
+#            new_resp = b""
+#        if not new_resp:
+#            try:
+#                new_sock.close()
+#            except OSError:
+#                pass
+#            return None
+#        try:
+#            upstream.close()
+#        except OSError:
+#            pass
+#        return new_sock, new_resp, target_host, target_port, location
 
 
 # ════════════════════════════════════════════════════════════════
