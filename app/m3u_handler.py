@@ -136,6 +136,33 @@ def rebuild_m3u(entries: list, header: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+def rebuild_txt(entries: list) -> str:
+    """重建 TXT 播放列表（每行：频道名,时移地址#直播地址[,分组]）。
+
+    与华为/中兴生成的 sctv.txt 格式一致，保证编辑 TXT 不会被写成 M3U。
+    """
+    lines = []
+    for entry in entries:
+        name = _sanitize_field(entry.get("display_name") or entry.get("tvg_name") or "")
+        if not name:
+            continue
+        _urls = entry.get("_urls")
+        urls = _urls if _urls and len(_urls) > 0 else ([entry.get("url", "")] if entry.get("url") else [])
+        urls = [str(u).strip() for u in urls if str(u or "").strip()]
+        if not urls:
+            continue
+        catchup = str(entry.get("catchup_source", "") or "").strip()
+        group = _sanitize_field(entry.get("group_title", ""))
+        for url in urls:
+            # 名子里有逗号会破坏 TXT 结构，转成中文逗号
+            safe_name = name.replace(",", "，")
+            line = f"{safe_name},{catchup + '#' if catchup else ''}{url}"
+            if group:
+                line += f",{group}"
+            lines.append(line)
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def _build_extinf(entry: dict) -> str:
     """构建 EXTINF 行（所有字段转义，避免引号/换行注入）。"""
     tvg_id = _sanitize_field(entry.get("tvg_id", ""))
@@ -166,8 +193,9 @@ def _build_extinf(entry: dict) -> str:
 # ════════════════════════════════════════════════════════════════
 
 _CHANNEL_RE = re.compile(
-    r'<channel\s+id="([^"]*)"\s*>\s*<display-name[^>]*>(.*?)</display-name>', re.S
+    r'<channel\s+id="([^"]*)"\s*>(.*?)</channel>', re.S
 )
+_DISPLAY_NAME_RE = re.compile(r'<display-name[^>]*>(.*?)</display-name>', re.S)
 
 
 def get_channel_options() -> list:
@@ -200,7 +228,13 @@ def get_channel_options() -> list:
         try:
             text = xml_path.read_text(encoding="utf-8", errors="replace")
             for m in _CHANNEL_RE.finditer(text):
-                add(html.unescape(m.group(1)), html.unescape(m.group(2)))
+                ch_id = html.unescape(m.group(1))
+                inner = m.group(2)
+                names = _DISPLAY_NAME_RE.findall(inner)
+                if names:
+                    display_names = [html.unescape(n.strip()) for n in names if n.strip()]
+                    combined_name = "/".join(display_names)
+                    add(ch_id, combined_name)
         except (OSError, ValueError) as e:
             print(f"[频道选项] 读取 epg.xml 失败: {e}")
 

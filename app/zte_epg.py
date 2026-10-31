@@ -3,7 +3,9 @@
 
 与华为平台（telecom_epg.py）完全独立：
 - 认证：/iptvepg/platform/auth.jsp → /iptvepg/function/index.jsp → /iptvepg/function/funcportalauth.jsp
-- 频道：/iptvepg/function/frameset_builder.jsp（解析 jsSetChannelInfo / ChannelID 等属性）
+- 频道：/iptvepg/function/frameset_builder.jsp
+  （解析 jsSetChannelInfo / addChannel / CTCSetConfig 属性：ChannelID、ChannelURL、
+   ChannelSDP、TimeShift、TimeShiftLength、TimeShiftURL、FCC* 等）
 - 节目：/iptvepg/frame299/action/tvod/getTvodlist.jsp（按 channelcode + 日期逐天查询）
 
 数据落盘与华为分开：
@@ -13,6 +15,7 @@
 - 输出：data/m3u/zte.m3u（同时刷新 sctv.txt / sctv.m3u 两个「当前平台」别名）
 """
 import datetime
+import html
 import json
 import os
 import re
@@ -23,7 +26,11 @@ from urllib.parse import urlparse
 import requests
 
 from . import config
-from .channel_groups import apply_group_rules
+from .channel_groups import (
+    apply_group_rules,
+    is_invalid_channel_name as _is_invalid_channel_name,
+    normalize_channel_name as _normalize_channel_name,
+)
 from .logger import logger
 
 DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -250,79 +257,138 @@ def _extract_user_token(text: str) -> str:
 # 频道列表
 # ════════════════════════════════════════════════════════════════
 
-_ATTR_RE_CACHE: Dict[str, re.Pattern] = {}
+# 与华为 getchannellistHWCTC.jsp 相同的属性集合
+# （中兴 frameset_builder.jsp 的 addChannel / 属性里也是这一套 Key="Value"：
+#   ChannelID / ChannelName / UserChannelID / ChannelURL / ChannelSDP /
+#   TimeShift / TimeShiftLength / TimeShiftURL / FCCEnable /
+#   ChannelFCCIP / ChannelFCCPort / ChannelFECPort）
+
+# 包装函数：addChannel('ChannelID="...",...') / Authentication.CTCSetConfig('Channel','...')
+# 先按“引号参数”取（频道名/URL 里带右括号也不会被截断），没有再按裸属性取。
+_CALL_QUOTED_RE = re.compile(
+    r'(?:addChannel|CTCSetConfig|setChannelInfo)\s*\(\s*'
+    r'(?:[\'"][^\'"]*[\'"]\s*,\s*)?'   # CTCSetConfig 的第一个参数（'Channel'）
+    r'([\'"])(.*?)\1',
+    re.IGNORECASE | re.DOTALL,
+)
+_CALL_RAW_RE = re.compile(
+    # 只匹配裸属性写法 addChannel(ChannelID="...",...)，
+    # 用 (?!['"]) 排除 addChannel('...')，避免同一个频道被引号规则和裸规则各算一次
+    r'addChannel\s*\(\s*(?![\'"])([^)]*ChannelID\s*=\s*[^)]*)\)',
+    re.IGNORECASE | re.DOTALL,
+)
+_CHANNEL_ID_RE = re.compile(r'\bChannelID\s*=\s*([\'"])(.*?)\1')
 
 
-def _attr_list(text: str, attr: str) -> List[str]:
-    pat = _ATTR_RE_CACHE.get(attr)
-    if pat is None:
-        pat = re.compile(attr + r'\s*=\s*"([^"]*)"')
-        _ATTR_RE_CACHE[attr] = pat
-    return [str(v).strip() for v in pat.findall(text or "")]
+def _attr(block: str, attr: str) -> str:
+    """取一个频道块里某个属性的值（引导符单双引号都兼容，HTML 实体还原）。"""
+    m = re.search(r'\b' + re.escape(attr) + r'\s*=\s*([\'"])(.*?)\1', block or "")
+    return html.unescape(m.group(2)).strip() if m else ""
+
+
+def _channel_blocks(text: str) -> List[str]:
+    """把页面切成「一个频道一块」。
+
+    优先识别 addChannel / CTCSetConfig 调用（属性串可能被拆成多个参数）；
+    没有包装函数时，按 ChannelID="..." 的位置切块。这样某个频道缺
+    TimeShiftURL / FCC 字段时不会把后面的频道整体错位。
+    """
+    blocks: List[str] = []
+    for m in _CALL_QUOTED_RE.finditer(text or ""):
+        block = m.group(2) or ""
+        if "ChannelID=" in block:
+            blocks.append(block)
+
+    # 裸属性写法（addChannel(ChannelID="...",...)）混用时补进来，避免漏台
+    for m in _CALL_RAW_RE.finditer(text or ""):
+        block = m.group(1) or ""
+        if "ChannelID=" in block and block not in blocks:
+            blocks.append(block)
+    if blocks:
+        return blocks
+
+    matches = list(_CHANNEL_ID_RE.finditer(text or ""))
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        blocks.append(text[m.start():end])
+    return blocks
 
 
 def _first_igmp(value: str) -> str:
     m = re.search(r'igmp://([^\s|"\'<>]+)', value or "")
     if m:
         return m.group(1).strip()
-    m = re.search(r'(\d{1,3}(?:\.\d{1,3}){3}:\d+)', value or "")
+    # 只接受裸写的组播地址（224–239.x.x.x:port）；带 rtsp:// 的 ChannelURL 不是组播
+    s = str(value or "").strip()
+    if "://" in s:
+        return ""
+    m = re.search(r'((?:22[4-9]|23\d)(?:\.\d{1,3}){3}:\d+)', s)
     return m.group(1) if m else ""
 
 
 def _first_rtsp(value: str) -> str:
-    m = re.search(r'(rtsp://[^\s|"\'<>]+)', value or "")
+    m = re.search(r'(rtsp://[^\s|"\'<>]+)', value or "", re.IGNORECASE)
     return m.group(1).strip() if m else ""
 
 
-def clean_channel_name(name: str) -> str:
-    """频道名只做空白归一，保留清晰度标记（中兴 EPG 用原始名做 key）。"""
-    return re.sub(r'\s+', ' ', str(name or "")).strip()
+def _first_replay_url(value: str) -> str:
+    """TimeShiftURL 可能是 rtsp 或 http，取第一个完整地址。"""
+    m = re.search(r'((?:rtsp|https?)://[^\s|"\'<>]+)', value or "", re.IGNORECASE)
+    return m.group(1).strip() if m else ""
 
 
 def parse_zte_channels(text: str) -> List[Dict[str, Any]]:
-    """解析 frameset_builder.jsp。
+    """解析 frameset_builder.jsp（与华为提取的参数保持一致）。
 
-    兼容两种来源：
-    - jsSetChannelInfo('a','b','c','d','<channelcode>') 提供 EPG 查询用的 channelcode
-    - ChannelID / ChannelName / UserChannelID / ChannelURL / ChannelSDP 属性提供地址
-    数量对不上时以 ChannelName 为准逐项兜底，避免 zip 截断丢频道。
+    提取字段：
+      ChannelID / ChannelName / UserChannelID / ChannelURL / ChannelSDP
+      TimeShift / TimeShiftLength / TimeShiftURL
+      FCCEnable / ChannelFCCIP / ChannelFCCPort / ChannelFECPort
+
+    - channel_id：优先用 jsSetChannelInfo 里的 channelcode（查 EPG 用），缺失时用 ChannelID
+    - rtsp_url：优先 TimeShiftURL（完整签名回看地址），否则 ChannelSDP 的 rtsp
+    - channel_sdp / timeshift_url：原始 ChannelSDP、完整 TimeShiftURL 都保留，供回退和排查
+    - 名称：去高清/HD 后缀、去中划线，套用与华为相同的 SCTV/CCTV/CETV 代号表
+    - 过滤：画中画 / 单音轨 / 带 pip 的频道
     """
     if not text:
         return []
 
+    blocks = _channel_blocks(text)
+    if not blocks:
+        return []
+
+    # jsSetChannelInfo('a','b','c','d','<channelcode>')：EPG 查询用的 channelcode
     codes: List[str] = []
     for m in re.finditer(r'jsSetChannelInfo\s*\(([^)]*)\)', text):
         args = re.findall(r"'([^']*)'", m.group(1))
         codes.append(args[4].strip() if len(args) >= 5 else "")
 
-    names = _attr_list(text, "ChannelName")
-    if not names:
-        return []
-
-    ids = _attr_list(text, "ChannelID")
-    ucids = _attr_list(text, "UserChannelID")
-    urls = _attr_list(text, "ChannelURL")
-    sdps = _attr_list(text, "ChannelSDP")
-    shifts = _attr_list(text, "TimeShift")
-    shift_lens = _attr_list(text, "TimeShiftLength")
-
-    def at(seq: List[str], i: int) -> str:
-        return seq[i] if i < len(seq) else ""
-
     channels: List[Dict[str, Any]] = []
     seen = set()
-    for i, raw_name in enumerate(names):
-        name = clean_channel_name(raw_name)
-        if not name:
+    # 只有 jsSetChannelInfo 的数量和频道块完全一致时才按序号对齐 channelcode，
+    # 否则（页面结构变化 / 有重复块）统一退回 ChannelID，避免张冠李戴。
+    use_codes = len(codes) == len(blocks)
+    for i, block in enumerate(blocks):
+        raw_name = _attr(block, "ChannelName")
+        if not raw_name:
             continue
-        # 过滤掉无效频道（与华为平台一致）
-        if "画中画" in name or "单音轨" in name:
+        # 画中画 / 单音轨 / pip 直接跳过（与华为同一套判断）
+        if _is_invalid_channel_name(raw_name):
             continue
 
-        channel_id = at(ids, i)
-        code = at(codes, i) or channel_id
-        igmp = _first_igmp(at(urls, i))
-        rtsp = _first_rtsp(at(sdps, i))
+        name, tvg_id = _normalize_channel_name(raw_name)
+        if not name:
+            continue
+
+        channel_id = _attr(block, "ChannelID")
+        code = codes[i] if use_codes and codes[i] else channel_id
+
+        igmp = _first_igmp(_attr(block, "ChannelURL"))
+        sdp = _first_rtsp(_attr(block, "ChannelSDP"))
+        timeshift_url = _first_replay_url(_attr(block, "TimeShiftURL"))
+        # 回看地址优先用完整签名的 TimeShiftURL，其次 ChannelSDP 的 rtsp
+        rtsp = timeshift_url or sdp
         if not igmp and not rtsp:
             continue
 
@@ -331,14 +397,33 @@ def parse_zte_channels(text: str) -> List[Dict[str, Any]]:
             continue
         seen.add(key)
 
+        # 部分中兴地市没有 FCCEnable 字段，只有 FCCIP/FCCPort；
+        # 有 FCCIP 就按“FCC 可用”处理，方便「频道总览」展示。
+        fcc_ip = _attr(block, "ChannelFCCIP")
+        fcc_enable = _attr(block, "FCCEnable") or ("2" if fcc_ip else "")
+
+        # TimeShiftLength 缺失时，从 TimeShiftURL 的 TSTVTimeLife 补（样例里就是 7200）
+        shift_len = _attr(block, "TimeShiftLength")
+        if not shift_len and timeshift_url:
+            m = re.search(r'TSTVTimeLife=(\d+)', timeshift_url, re.IGNORECASE)
+            if m:
+                shift_len = m.group(1)
+
         channels.append({
             "channel_id": code,
             "name": name,
-            "user_channel_id": at(ucids, i),
+            "tvg_id": tvg_id,
+            "user_channel_id": _attr(block, "UserChannelID"),
             "channel_url": igmp,
             "rtsp_url": rtsp,
-            "timeshift": at(shifts, i),
-            "timeshift_length": at(shift_lens, i),
+            "channel_sdp": sdp,
+            "timeshift_url": timeshift_url,
+            "timeshift": _attr(block, "TimeShift"),
+            "timeshift_length": shift_len,
+            "fcc_enable": fcc_enable,
+            "fcc_ip": fcc_ip,
+            "fcc_port": _attr(block, "ChannelFCCPort"),
+            "fec_port": _attr(block, "ChannelFECPort"),
             "channel_no": str(len(channels) + 1),
         })
     return channels
@@ -566,32 +651,77 @@ def _replay_suffix(rtsp_url: str) -> str:
     return ""
 
 
-def zte_catchup_url(ch: Dict[str, Any], cfg: Dict[str, Any]) -> str:
-    """回看地址：replay_proxy + /PLTV/xxx.smil + playseek。
+# 最终回看地址格式（与用户环境实际生成的格式一致）：
+#   ...AuthInfo=...&playseek=${(b)yyyyMMddHHmmss}+08&programend=${(e)yyyyMMddHHmmss}+08
+_PLAYSEEK_SIGNED = ("playseek=${(b)yyyyMMddHHmmss}+08"
+                    "&programend=${(e)yyyyMMddHHmmss}+08")
+# 代理回退仍用原始脚本的 “-” 区间格式：
+# 代理的 _translate_request 靠它识别回看并转成 programbegin/programend
+_PLAYSEEK_PROXY = "playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
 
-    replay_proxy 一般填本程序内置 RTSP 代理的地址（rtsp://内网IP:554），
-    或自建代理地址；留空时退回原始 rtsp 主机 + 转换后的 PLTV 路径。
+
+def _append_playseek(url: str, template: str = _PLAYSEEK_SIGNED) -> str:
+    """给回看地址追加时间模板；已有 playseek 则不动，注意 ? / & 和结尾的 ?。"""
+    s = str(url or "").strip()
+    if not s:
+        return ""
+    low = s.lower()
+    if "playseek=" in low or "programend=" in low:
+        return s
+    if s.endswith("?") or s.endswith("&"):
+        return s + template
+    return f"{s}&{template}" if "?" in s else f"{s}?{template}"
+
+
+def _looks_signed(url: str) -> bool:
+    """带 AuthInfo / accountinfo / it 等签名参数的回看地址。"""
+    low = str(url or "").lower()
+    return any(k in low for k in ("authinfo=", "accountinfo=", "&it=", "?it=",
+                                  "guardencrypt="))
+
+
+def zte_catchup_url(ch: Dict[str, Any], cfg: Dict[str, Any]) -> str:
+    """回看地址：优先完整签名的 TimeShiftURL，其次 ChannelSDP + 代理。
+
+    规则（与抓包/原始脚本一致）：
+    1. 有 TimeShiftURL 且没被手工改过 → 直接用它（带 AuthInfo，服务器认这个），
+       只补 playseek + programend；存在即视为可回看，不再看 TimeShift 标志。
+    2. rtsp_url 被手工改成别的签名地址 → 用 rtsp_url。
+    3. 无签名回退：必须 TimeShift == "1"，用 ChannelSDP(rtsp) 拼 /PLTV/xxx.smil，
+       走 replay_proxy（原始脚本的方案，playseek 用 “-” 区间格式）。
     """
     rtsp = str(ch.get("rtsp_url", "") or "").strip()
+    ts = str(ch.get("timeshift_url", "") or "").strip()
+
+    # 1) TimeShiftURL 优先（完整签名回看 URL）
+    if ts and (not rtsp or rtsp == ts):
+        return _append_playseek(ts)
+
+    # 2) 手工编辑过 rtsp_url，且本身已经是签名地址
+    if rtsp and _looks_signed(rtsp):
+        return _append_playseek(rtsp)
+
+    # 3) 无签名回退：ChannelSDP(rtsp) + TimeShift==1
+    if str(ch.get("timeshift", "") or "").strip() != "1":
+        return ""
+    if not rtsp.lower().startswith("rtsp://"):
+        rtsp = str(ch.get("channel_sdp", "") or "").strip()
     if not rtsp.lower().startswith("rtsp://"):
         return ""
+
     suffix = _replay_suffix(rtsp)
     replay_proxy = str(cfg.get("replay_proxy", "") or "").strip().rstrip("/")
 
-    if not suffix:
-        # 路径不像 /live/xxx.sdp 或 /PLTV/xxx.smil：不动路径，直接原地址加 playseek
-        return rtsp.split("?")[0] + "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
-
     if replay_proxy:
-        base = replay_proxy + suffix
+        base = replay_proxy + suffix if suffix else rtsp.split("?")[0]
     else:
         m = re.match(r'(rtsp://[^/]+)', rtsp)
         host = m.group(1) if m else ""
-        base = host + suffix if host else rtsp.split("?")[0]
+        base = (host + suffix) if (host and suffix) else rtsp.split("?")[0]
 
     if not base.lower().startswith("rtsp://"):
         return ""
-    return base + "?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
+    return _append_playseek(base, _PLAYSEEK_PROXY)
 
 
 # ════════════════════════════════════════════════════════════════

@@ -19,7 +19,11 @@ from urllib.parse import urlparse, quote
 import requests
 
 from . import config
-from .channel_groups import apply_group_rules as _apply_group_rules
+from .channel_groups import (
+    apply_group_rules as _apply_group_rules,
+    is_invalid_channel_name as _is_invalid_channel_name,
+    normalize_channel_name as _normalize_channel_name,
+)
 from .logger import logger
 from .crypt_1 import PRPCrypt
 
@@ -345,42 +349,13 @@ def telecom_get_channels(host: str, cookies: dict, user_token: str, stbid: str,
         )
         channels = pattern.findall(response.text)
 
-        def clean_channel_name(name):
-            name = name.strip()
-            for suffix in ("高清", "HD", "FHD", "UHD"):
-                if name.endswith(suffix):
-                    name = name[: -len(suffix)].rstrip()
-            name = name.replace("-", "")
-            return name
-
-        # 过滤掉包含"画中画"和"单音轨"的无效频道
-        channels = [ch for ch in channels if "画中画" not in ch[1] and "单音轨" not in ch[1]]
-
-        # ★ 新增映射字典：原代号 -> {显示名, tvg-id}
-        NAME_MAP = {
-            "SCTV2": {"name": "四川经济", "tvg_id": "SCTV2"},
-            "SCTV3": {"name": "四川文化旅游", "tvg_id": "SCTV3"},
-            "SCTV4": {"name": "四川新闻", "tvg_id": "SCTV4"},
-            "SCTV5": {"name": "四川影视文艺", "tvg_id": "SCTV5"},
-            "SCTV6": {"name": "四川星空购物", "tvg_id": "SCTV6"},
-            "SCTV7": {"name": "四川妇女儿童", "tvg_id": "SCTV7"},
-            "SCTV科教": {"name": "四川科教", "tvg_id": "SCTV科教"},
-            "CCTV少儿": {"name": "CCTV14", "tvg_id": "CCTV14"},
-            "CETV1": {"name": "中国教育1台", "tvg_id": "CETV1"},
-            "CETV2": {"name": "中国教育2台", "tvg_id": "CETV2"},
-            "CETV4": {"name": "中国教育4台", "tvg_id": "CETV4"},
-        }
+        # 过滤掉 画中画 / 单音轨 / 带 pip 的无效频道（与中兴平台共用同一套判断）
+        channels = [ch for ch in channels if not _is_invalid_channel_name(ch[1])]
 
         formatted = []
         for ch in channels:
-            orig_name = clean_channel_name(ch[1])
-            display_name = orig_name
-            tvg_id = orig_name
-            
-            # 如果命中映射字典，替换中文名并保留固定 tvg_id
-            if orig_name in NAME_MAP:
-                display_name = NAME_MAP[orig_name]["name"]
-                tvg_id = NAME_MAP[orig_name]["tvg_id"]
+            # 显示名 / tvg-id：去清晰度后缀、去中划线，并套用共享代号表
+            display_name, tvg_id = _normalize_channel_name(ch[1])
 
             # 截断 TimeShiftURL
             rtsp_raw = ch[6]
@@ -569,7 +544,8 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
             rtsp_url = append_r2h_token(rtsp_url, r2h_token)
 
         tvg_logo = config.logo_link(logo_base, epg_server_url, name)
-        attrs = f'tvg-logo="{tvg_logo}" tvg-id="{name}" tvg-name="{name}"'
+        tvg_id_str = str(ch.get("tvg_id", "") or name).strip() or name
+        attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id_str}" tvg-name="{name}"'
 
         # ★ 新增：插入分组
         if enable_group:

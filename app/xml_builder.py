@@ -219,14 +219,23 @@ def build_xml(
             except OSError:
                 pass
 
-        # 备份到 SHARE_DIR
-        share_path = config.SHARE_DIR / "epg.xml"
+        # 备份到 SHARE_DIR（同时保留普通 XML 和 GZ 压缩包）
         try:
-            share_path.parent.mkdir(parents=True, exist_ok=True)
+            config.SHARE_DIR.mkdir(parents=True, exist_ok=True)
+            
+            # 1. 备份未压缩的 epg.xml
+            share_path = config.SHARE_DIR / "epg.xml"
             tmp_share = share_path.parent / "epg.xml.tmp"
             with open(tmp_share, "w", encoding="utf-8", newline="\n") as f:
                 f.write(xml_content)
             os.replace(str(tmp_share), str(share_path))
+            
+            # 2. 备份压缩后的 epg.xml.gz（复用前面已经生成的 gz_buf）
+            share_gz_path = config.SHARE_DIR / "epg.xml.gz"
+            tmp_share_gz = share_gz_path.parent / "epg.xml.gz.tmp"
+            tmp_share_gz.write_bytes(gz_buf.getvalue())
+            os.replace(str(tmp_share_gz), str(share_gz_path))
+            
         except OSError:
             pass
 
@@ -288,11 +297,14 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
 
         for ch in channels:
             name = str(ch.get("name", "") or "").strip()
-            if not name or name in added:
+            # ★ 平台 XML 的 <channel id> 用频道缓存里的 tvg_id（SCTV2/CCTV14/CETV1…），
+            #   这样和生成的 m3u（tvg-id=）以及主 epg.xml 完全对得上。
+            tvg_id = str(ch.get("tvg_id", "") or "").strip() or name
+            if not name or tvg_id in added:
                 continue
-            added.add(name)
+            added.add(tvg_id)
 
-            lines.append(f' <channel id="{_escape_xml(name)}">')
+            lines.append(f' <channel id="{_escape_xml(tvg_id)}">')
             # ★ 修改开始：支持多个别名
             for dn in re.split(r'[,，|/]', name):
                 dn = dn.strip()
@@ -329,7 +341,7 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
                     start_time = prog.get("starttime", "") or prog.get("start", "")
                     end_time = prog.get("endtime", "") or prog.get("stop", "")
                     lines.append(
-                        f' <programme channel="{_escape_xml(name)}" '
+                        f' <programme channel="{_escape_xml(tvg_id)}" '
                         f'start="{epg_parser.format_xmltv_time(start_time)}" '
                         f'stop="{epg_parser.format_xmltv_time(end_time)}">'
                     )

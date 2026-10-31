@@ -1080,30 +1080,16 @@ async function addPickedEpgChannels(){
 }
 
 async function addChannelsToEpg(list){
+ // 匹配/并入逻辑统一交给后端：前端 epgChList 可能还没加载或是旧数据，
+ // 由后端按「频道名 → 源频道ID/TVG-ID → TVG-Name」匹配已有频道。
  const items = list.map(c => {
    const cName = c.name || c.id || '';
-   const cTvgId = c.id || '';
-   
-   let matches = (epgChList || []).filter(x => 
-       x.name === cName || 
-       x.tvg_id === cTvgId || 
-       x.tvg_name === cName ||
-       x.tvg_name === cTvgId
-   );
-   
-   let existing = matches.find(x => x.source_type === 'telecom');
-   
-   if (!existing && matches.length > 0) {
-       existing = matches[0];
-   }
-   
    return {
      name: cName,
      source: epgSourceLabel(c.source_url, c.source_name) || '外部EPG',
      source_url: c.source_url || '',
-     tvg_id: cTvgId,
-     rule: c.rule || 'auto',
-     target_logic_id: existing ? existing.logic_id : ''
+     tvg_id: c.id || '',
+     rule: c.rule || 'auto'
    };
  }).filter(x => x.name);
 
@@ -1112,10 +1098,15 @@ async function addChannelsToEpg(list){
   const r=await fetch('/api/epg/extracts/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})})
   const d=await r.json()
   if(!r.ok){showToast('添加失败: '+(d.detail||r.status),'error');return}
-  showToast('已添加 '+d.added+' 个'+(d.skipped?('，跳过 '+d.skipped+' 个已存在'):''),'success')
+  const msg=['已添加 '+d.added+' 个']
+  if(d.merged) msg.push('并入已有 '+d.merged+' 个')
+  if(d.updated) msg.push('更新 '+d.updated+' 个')
+  if(d.skipped) msg.push('跳过 '+d.skipped+' 个已存在')
+  showToast(msg.join('，'),'success')
   epgPickSel.clear()
   await loadEpgPicker()
   await loadEpgExtracts()
+  await loadEpgChannels()
  }catch(e){ showToast('添加失败: '+(e.message||e),'error') }
 }
 
@@ -1373,29 +1364,15 @@ function renderEpgChannels(){
         onmouseup="this.closest('tr').setAttribute('draggable','true')"
         onchange="updateEpgChField(${i},'tvg_name',this.value)">`
    if(mergedExtracts.length > 0) {
-     const otherNames = mergedExtracts.map(e => e.name).filter(n => n && n !== (ch.tvg_name||ch.name))
+     const tvgNameParts = String(ch.tvg_name||ch.name||'').split(/[,，;；\/]/).map(s=>s.trim());
+     const otherNames = mergedExtracts.map(e => e.name).filter(n => n && !tvgNameParts.includes(n));
      if(otherNames.length > 0) {
        tvgNameHtml += `<div style="font-size:11px;color:var(--text-secondary);margin-top:2px;line-height:1.2;word-break:break-all">并入: ${otherNames.map(escapeHtml).join(' / ')}</div>`
      }
    }
 
-   let mainSource = '';
-   const st = ch.source_type || '';
-   if (st === 'extract') {
-     const remark = ch.source_remark || '';
-     const en = ch.extract_name || '';
-     mainSource = (en && en !== ch.name) ? (remark + ' (' + en + ')') : remark;
-   } else {
-     mainSource = ch.source_remark || '自建json';
-   }
-
-   const otherSources = [...new Set(mergedExtracts.map(e => e.source).filter(Boolean))];
-   const extraSources = otherSources.filter(s => s !== mainSource && s !== ch.source_remark);
-
-   let allSources = [mainSource, ...extraSources].filter(Boolean);
-   allSources = [...new Set(allSources)];
-
-   let sourceHtml = `<span style="word-break:break-all;">${allSources.map(escapeHtml).join(' / ')}</span>`;
+// 整段替换为：
+   let sourceHtml = `<span style="word-break:break-all;">${escapeHtml(ch.source_remark || '自建json')}</span>`;
 
    return `<tr draggable="true" ondragstart="epgDragStart(event,${i})" ondrop="epgDrop(event,${i})" ondragover="event.preventDefault()">
    <td style="text-align:center"><input type="checkbox" ${checked} style="width:auto"
@@ -1668,11 +1645,27 @@ async function renderM3uFiles(){
  const container=$('m3uFileList')
  if(!files.length){container.innerHTML='<div class="empty">暂无M3U文件，请上传</div>';return}
  container.innerHTML=`
- <table id="m3uFileTable"><thead><tr><th>文件名</th><th>频道数</th><th>大小</th><th>修改时间</th><th>操作</th></tr></thead>
- <tbody>${files.map(f=>`
+ <table id="m3uFileTable">
+  <thead>
+   <tr>
+    <th>文件名</th>
+    <th style="text-align:center">频道数</th>
+    <th style="text-align:center">大小</th>
+    <th>修改时间</th>
+    <th style="text-align:center">操作</th>
+   </tr>
+  </thead>
+  <tbody>
+  ${files.map(f=>`
   <tr>
-   <td style="white-space:nowrap">
-   <button class="btn btn-sm" onclick="editM3uFile(${jsArg(f.name)})">✏️ 匹配</button>
+   <td style="word-break:break-all;font-weight:500">${escapeHtml(f.name)}</td>
+   <td style="text-align:center">${f.channel_count || 0}</td>
+   <td style="text-align:center;font-size:12px;color:var(--text-secondary)">${((f.size||0)/1024).toFixed(1)} KB</td>
+   <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(f.mtime)}</td>
+   <td style="text-align:center;white-space:nowrap">
+   ${f.is_txt
+     ? '<span class="btn btn-sm" style="cursor:default;opacity:.65" title="TXT 为电信生成的播放列表，只读（编辑请用「匹配」的 M3U 文件）">TXT 只读</span>'
+     : `<button class="btn btn-sm" onclick="editM3uFile(${jsArg(f.name)})">✏️ 匹配</button>`}
    <button class="btn btn-sm" onclick="copyM3uLink(${jsArg(f.name)})">📋 复制链接</button>
    <button class="btn btn-sm" onclick="exportCleanM3u(${jsArg(f.name)})" title="只导出匹配到节目单的频道">📥 纯净版</button>
    <button class="btn btn-sm btn-danger" onclick="deleteM3uFile(${jsArg(f.name)})">✕</button>
@@ -2071,6 +2064,19 @@ function autoSaveM3u(){
  },500)
 }
 
+function m3uSyncChanName(idx){
+  const e = currentM3uEntries[idx];
+  if(!e) return;
+  const opt = (_m3uOptions || []).find(o => o.tvg_id === e.tvg_id && o.tvg_id !== '9999');
+  if(!opt){ showToast('找不到对应的 EPG 频道，无法同步','error'); return; }
+  e.display_name = opt.tvg_name;
+  e.tvg_name = opt.tvg_name;
+  renderM3uTable(currentM3uEntries, _m3uOptions);
+  if(typeof m3uSyncColumnVisibility === 'function') m3uSyncColumnVisibility();
+  autoSaveM3u();
+  showToast('已同步显示名称为「' + opt.tvg_name + '」','success');
+}
+
 function m3uMatchEntry(entry, options, iconFiles) {
   const display = entry.display_name || entry.tvg_name || '';
   if (!display) return false;
@@ -2089,13 +2095,21 @@ function m3uMatchEntry(entry, options, iconFiles) {
   }
   // 其次按名称精确匹配
   if (!epgMatch) {
-    epgMatch = options.find(o => o.tvg_name === display && o.tvg_name !== '暂无节目单');
+    epgMatch = options.find(o => {
+      if (o.tvg_name === '暂无节目单') return false;
+      const names = o.tvg_name.split(/[,，;；\/]/).map(s => s.trim());
+      return names.includes(display);
+    });
   }
   // 最后使用清洗后的名字模糊匹配
   if (!epgMatch) {
     epgMatch = options.find(o => {
-      const cleanOption = o.tvg_name.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K|频道|综合)/gi, '').toLowerCase();
-      return cleanOption === cleanDisplay && o.tvg_name !== '暂无节目单';
+      if (o.tvg_name === '暂无节目单') return false;
+      const names = o.tvg_name.split(/[,，;；\/]/).map(s => s.trim());
+      return names.some(n => {
+        const cleanOption = n.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K|频道|综合)/gi, '').toLowerCase();
+        return cleanOption === cleanDisplay;
+      });
     });
   }
 
@@ -3471,91 +3485,6 @@ function exportOverviewCsv(){
  document.body.appendChild(a); a.click(); document.body.removeChild(a)
  URL.revokeObjectURL(a.href)
  showToast('已导出 CSV','success')
-}
-
-async function showEpgPivot() {
-  showToast('正在统计今日节目单数据...', 'info');
-  try {
-    const r = await fetch('/api/epg/pivot');
-    const d = await r.json();
-    const rows = d.data || [];
-    
-    let html = `<div style="max-height:60vh;overflow:auto"><table class="table" style="width:100%">
-      <thead><tr><th>频道名</th><th>TVG-ID</th><th>数据来源</th><th>节目数量</th></tr></thead>
-      <tbody>`;
-      
-    rows.forEach(x => {
-      let badge = 'badge-danger';
-      if (x.source === '电信源') badge = 'badge-success';
-      else if (x.source === '外部源') badge = 'badge-warning';
-      else if (x.source === '空数据(占位)') badge = 'badge-secondary';
-      
-      html += `<tr>
-        <td>${escapeHtml(x.name)}</td>
-        <td>${escapeHtml(x.tvg_id)}</td>
-        <td><span class="badge ${badge}">${x.source}</span></td>
-        <td style="text-align:center;font-weight:bold;color:${x.count>0?'#52c41a':'#ff4d4f'}">${x.count}</td>
-      </tr>`;
-    });
-    
-    if (!rows.length) html += '<tr><td colspan="4" style="text-align:center">暂无数据</td></tr>';
-    html += '</tbody></table></div>';
-    
-    $('modalTitle').textContent = `📊 EPG 数据透视 (${d.date})`;
-    $('modalBody').innerHTML = html;
-    $('modalActions').innerHTML = `<button class="btn" onclick="closeModal()">关闭</button>`;
-    $('modal').classList.add('active');
-  } catch(e) {
-    showToast('获取透视数据失败: ' + e.message, 'error');
-  }
-}
-
-// 勾选全选
-function toggleAllEpgCh(checked) {
-  const boxes = document.querySelectorAll('.epg-ch-cb');
-  boxes.forEach(b => b.checked = checked);
-}
-
-// 收集选中的 Logic ID
-function getSelectedEpgChIds() {
-  const boxes = document.querySelectorAll('.epg-ch-cb:checked');
-  return Array.from(boxes).map(b => b.getAttribute('data-lid'));
-}
-
-async function batchDeleteEpgCh() {
-  const targets = getSelectedEpgChIds();
-  if (!targets.length) return showToast('请先勾选要删除的频道', 'error');
-  if (!await customConfirm(`确定要批量删除选中的 ${targets.length} 个频道吗？\n（同步删除关联的提取记录）`)) return;
-  
-  try {
-    const r = await fetch('/api/epg-channels/batch-delete', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ targets })
-    });
-    const d = await r.json();
-    if (d.success) {
-      showToast(`已删除 ${d.count} 个频道`, 'success');
-      await loadEpgChannels();
-      if (document.getElementById('epgChSelectAll')) document.getElementById('epgChSelectAll').checked = false;
-    }
-  } catch(e) { showToast('删除失败: ' + e.message, 'error'); }
-}
-
-async function batchToggleEpgCh(enabled) {
-  const targets = getSelectedEpgChIds();
-  if (!targets.length) return showToast('请先勾选要操作的频道', 'error');
-  
-  try {
-    const r = await fetch('/api/epg-channels/batch-toggle', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ targets, enabled })
-    });
-    const d = await r.json();
-    if (d.success) {
-      showToast(`已${enabled?'启用':'禁用'} ${d.count} 个频道`, 'success');
-      await loadEpgChannels();
-    }
-  } catch(e) { showToast('操作失败: ' + e.message, 'error'); }
 }
 
 async function init(){

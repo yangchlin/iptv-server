@@ -157,7 +157,14 @@ class TaskScheduler:
         if download_progress._running:
             logger.log("[任务] 有其他任务在运行，跳过本次定时任务", category="失败")
             return
-        self.current_task = asyncio.create_task(self._run_daily())
+        download_progress._running = True
+        download_progress._paused = False
+        download_progress._stopped = False
+        try:
+            self.current_task = asyncio.create_task(self._run_daily())
+        except Exception:
+            download_progress._running = False
+            raise
 
     async def _run_daily(self):
         logger.log("[任务] ====== 开始每日 EPG 更新 ======", category="外部EPG")
@@ -212,7 +219,7 @@ class TaskScheduler:
                 date_progs = defaultdict(list)
                 for prog in programmes:
                     start = prog.get("start", "")
-                    d = start[:8] if len(start) >= 8 else ""
+                    d = epg_parser.format_xmltv_time(start)[:8]
                     if d in extract_dates:
                         date_progs[d].append(prog)
 
@@ -275,6 +282,12 @@ class TaskScheduler:
             logger.log(f"[任务] 错误: {str(e)}", category="失败")
             import traceback
             logger.log(traceback.format_exc(), category="失败")
+        finally:
+            # ★ 释放与手动任务共享的锁，否则之后所有手动下载都会被「已有任务运行中」挡住
+            from .progress import download_progress
+            download_progress._running = False
+            download_progress._paused = False
+            download_progress._stopped = False
 
     # ════════════════════════════════════════════════════════════
     # 合并（同步方法，外层用 to_thread）
@@ -329,7 +342,7 @@ class TaskScheduler:
                 date_progs = defaultdict(list)
                 for prog in programmes:
                     start = prog.get("start", "")
-                    d = start[:8] if len(start) >= 8 else ""
+                    d = epg_parser.format_xmltv_time(start)[:8]
                     if d in extract_dates:
                         date_progs[d].append(prog)
 
@@ -384,16 +397,36 @@ class TaskScheduler:
     # ════════════════════════════════════════════════════════════
 
     async def telecom_channels_task(self):
-        if config.get_active_platform() == "zte":
-            await self._zte_channels_task()
-        else:
-            await self._huawei_channels_task()
+        from .progress import download_progress
+        if download_progress._running:
+            logger.log("[任务] 有其他任务在运行，跳过电信频道刷新", category="失败")
+            return
+        download_progress._running = True
+        try:
+            if config.get_active_platform() == "zte":
+                await self._zte_channels_task()
+            else:
+                await self._huawei_channels_task()
+        finally:
+            download_progress._running = False
+            download_progress._paused = False
+            download_progress._stopped = False
 
     async def telecom_epg_task(self):
-        if config.get_active_platform() == "zte":
-            await self._zte_epg_task()
-        else:
-            await self._huawei_epg_task()
+        from .progress import download_progress
+        if download_progress._running:
+            logger.log("[任务] 有其他任务在运行，跳过电信EPG下载", category="失败")
+            return
+        download_progress._running = True
+        try:
+            if config.get_active_platform() == "zte":
+                await self._zte_epg_task()
+            else:
+                await self._huawei_epg_task()
+        finally:
+            download_progress._running = False
+            download_progress._paused = False
+            download_progress._stopped = False
 
     async def _huawei_channels_task(self):
         from . import telecom_epg

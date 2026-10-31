@@ -131,11 +131,12 @@ def extract_programmes_51zmt(xml_text: str, keyword: str = "") -> list:
     """51zmt 规则提取节目"""
     programmes = []
     try:
-        # 构建 channel id 到 display-name 的映射
+        # 构建 channel id 到 display-name 的映射（兼容 <icon> 等标签排在前面）
         ch_map = {}
-        channel_pattern = r'<channel\s+id="(\d+)">\s*<display-name[^>]*>(.*?)</display-name>'
-        for match in re.finditer(channel_pattern, xml_text, re.DOTALL):
-            ch_map[match.group(1)] = match.group(2).strip()
+        for cm in re.finditer(r'<channel\s+id="(\d+)"[^>]*>(.*?)</channel>', xml_text, re.DOTALL):
+            dn = re.search(r'<display-name[^>]*>(.*?)</display-name>', cm.group(2), re.DOTALL)
+            if dn:
+                ch_map[cm.group(1)] = _clean_text(dn.group(1))
 
         prog_pattern = r'<programme\s+([^>]+)>(.*?)</programme>'
         for match in re.finditer(prog_pattern, xml_text, re.DOTALL):
@@ -214,10 +215,13 @@ def get_channel_list(xml_text: str, rule: str = "auto") -> list:
             
         return True
 
-    pattern = r'<channel\s+id="([^"]+)">\s*<display-name[^>]*>(.*?)</display-name>'
+    # 先按整个 <channel> 块取，兼容 <icon> / <url> 等标签排在 <display-name> 前面
+    pattern = r'<channel\s+id="([^"]+)"[^>]*>(.*?)</channel>'
     for match in re.finditer(pattern, xml_text, re.DOTALL):
         ch_id = match.group(1).strip()
-        name = match.group(2).strip()
+        inner = match.group(2)
+        dn = re.search(r'<display-name[^>]*>(.*?)</display-name>', inner, re.DOTALL)
+        name = _clean_text(dn.group(1)) if dn else ch_id
         # 名字和ID，至少要有一个看起来是正常的
         if _is_valid_name(name) or _is_valid_name(ch_id):
             # 如果 name 是垃圾，但 id 是好的（比如 id="CDTV8", name="C"），就把 name 重置为 id

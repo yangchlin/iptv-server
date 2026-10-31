@@ -572,18 +572,21 @@ def merge_telecom_channels_into_epg(telecom_channels: list,
 
     规则：
     - 只新增，不删除、不改动已有频道的排序和配置（幂等，重复执行不会重复添加）
-    - tvg_id 用频道名（与 m3u 的 tvg-id 一致），重名冲突时自动加 `_2` 后缀
+    - tvg_id 用频道缓存里的 tvg_id（SCTV2/CCTV14/CETV1…），重名冲突时自动加 `_2` 后缀
+    - 已存在的电信频道：如果它的 tvg_id 还是默认的频道名（没被手工改过），
+      会顺手升级成新的代号（例如 四川经济 → SCTV2），保证 epg.xml 的 tvg-id 与 m3u 一致
     - 标记 source_type=telecom，便于在「EPG 管理」里辨认；source_remark 标平台
 
-    返回 {"added", "skipped", "total"}（失败时多一个 "error"）
+    返回 {"added", "updated", "skipped", "total"}（失败时多一个 "error"）
     """
     p = normalize_platform(platform or get_active_platform())
-    result = {"added": 0, "skipped": 0, "total": 0}
+    result = {"added": 0, "updated": 0, "skipped": 0, "total": 0}
     if not isinstance(telecom_channels, list):
         return result
 
     epg_channels = get_epg_channels()
-    names = {str(c.get("name", "")).strip() for c in epg_channels}
+    by_name = {str(c.get("name", "")).strip(): c for c in epg_channels}
+    names = set(by_name)
     tvg_ids = {str(c.get("tvg_id", "")).strip() for c in epg_channels}
     changed = False
 
@@ -591,11 +594,35 @@ def merge_telecom_channels_into_epg(telecom_channels: list,
         name = str(ch.get("name", "") or "").strip()
         if not name:
             continue
+        wanted_id = str(ch.get("tvg_id", "") or "").strip()
+# 替换为以下代码：
         if name in names:
+            ex = by_name.get(name)
+            source_label = "电信源" if p == "huawei" else "中兴源"
+            
+            if ex is not None:
+                current_source = str(ex.get("source_remark", "") or "").strip()
+                # 仔细拆分去重
+                src_parts = [s.strip() for s in _re.split(r'[,，;；/]', current_source) if s.strip()]
+                if source_label not in src_parts:
+                    src_parts.append(source_label)
+                    ex["source_remark"] = "/".join(src_parts)
+                    changed = True
+                    result["updated"] += 1
+
+            # 老数据：自动并入时 tvg_id 用的是频道名，映射表更新后顺手升级
+            old_id = str((ex or {}).get("tvg_id", "") or "").strip()
+            if (ex is not None and str(ex.get("source_type", "")) == "telecom"
+                    and wanted_id and old_id == name and wanted_id != name
+                    and wanted_id not in tvg_ids):
+                ex["tvg_id"] = wanted_id
+                tvg_ids.add(wanted_id)
+                result["updated"] += 1
+                changed = True
             result["skipped"] += 1
             continue
 
-        tvg_id = str(ch.get("tvg_id", "") or name).strip()
+        tvg_id = wanted_id or name
         # 如果 tvg_id 冲突，就在英文后面加后缀
         suffix = 2
         base_tvg_id = tvg_id
@@ -613,6 +640,7 @@ def merge_telecom_channels_into_epg(telecom_channels: list,
             "source_type": "telecom",
             "source_remark": "电信源" if p == "huawei" else "中兴源",
         })
+        by_name[name] = epg_channels[-1]
         names.add(name)
         tvg_ids.add(tvg_id)
         result["added"] += 1

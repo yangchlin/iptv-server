@@ -119,8 +119,18 @@ logger.add_extra_sink(_telecom_log_sink)
 _CHANNEL_KEEP_KEYS = {
     "channel_id", "name", "user_channel_id", "channel_url", "timeshift",
     "timeshift_length", "rtsp_url", "fcc_enable", "fcc_ip", "fcc_port", "fec_port",
-    "_manual", "_disabled", "tvg_id", "channel_no",  # ★ 新增这两个标记 ★ 新增 "tvg_id"
+    "_manual", "_disabled", "tvg_id", "channel_no",
+    # 中兴：完整签名回看地址（TimeShiftURL）/ 原始 ChannelSDP（回退用）
+    "timeshift_url", "channel_sdp",
 }
+
+# 这些字段是 URL，中兴 TimeShiftURL 带 AuthInfo 时可能上千字符，不能按 500 截断
+_URL_LIKE_CHANNEL_KEYS = {"channel_url", "rtsp_url", "timeshift_url", "channel_sdp"}
+
+
+def _clip_channel_value(key: str, value: Any) -> str:
+    s = str(value or "")
+    return s[:4000] if key in _URL_LIKE_CHANNEL_KEYS else s[:500]
 
 # schedule 时间格式：HH:MM
 _TIME_RE = re.compile(r'^([01]\d|2[0-3]):[0-5]\d$')
@@ -249,7 +259,7 @@ def _sanitize_channels(raw: Any) -> list:
         item = {}
         for k in _CHANNEL_KEEP_KEYS:
             if k in ch:
-                item[k] = str(ch[k])[:500]
+                item[k] = _clip_channel_value(k, ch[k])
         out.append(item)
     return out
 
@@ -605,7 +615,7 @@ async def save_cached_channels_api(data: dict = Body(...)):
             if k in ("_manual", "_disabled"):
                 ch[k] = bool(item[k])
             else:
-                ch[k] = str(item[k] or "")[:500]
+                ch[k] = _clip_channel_value(k, item[k])
 
         name = ch.get("name", "").strip()
         cid = ch.get("channel_id", "").strip()
@@ -870,6 +880,11 @@ async def generate_m3u_api(request: Request, data: dict = Body(...)):
     # 与 /config 一致：缺失 config 时读取已保存配置
     config_data = _fill_output_urls(_get_effective_config(data), request, persist=True)
     channels = _sanitize_channels(data.get("channels", []))
+    # 页面按钮只发空 body：用当前华为频道缓存生成，避免把 telecom.m3u 覆盖成空文件
+    if not channels:
+        channels = _sanitize_channels(config.get_telecom_channels().get("channels", []))
+    if not channels:
+        return {"success": False, "message": "频道缓存为空，请先「更新频道列表」"}
 
     m3u_content = telecom_generate_m3u(channels, config_data)
 

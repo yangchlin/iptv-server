@@ -11,6 +11,17 @@
       .replace(/'/g,'&#39;');
   }
 
+  // 表格里只显示签名地址的“主机+路径”，完整 URL 放 title，避免一行几千字符
+  function tcReplayView(ch){
+    var u = String((ch && ch.rtsp_url) || '');
+    if (!u) return '—';
+    if (ch.timeshift_url && u === ch.timeshift_url) {
+      var q = u.indexOf('?');
+      return (q > 0 ? u.slice(0, q) : u) + (q > 0 ? '?…' : '');
+    }
+    return u;
+  }
+
   function tcAuthHeaders(){
     return {'Content-Type':'application/json'};
   }
@@ -173,13 +184,23 @@
       if (editing) {
         var inp4 = document.createElement('input');
         inp4.value = ch.rtsp_url || '';
-        inp4.placeholder = "rtsp://...（可空）";
+        inp4.placeholder = ch.timeshift_url ? "TimeShiftURL（含 AuthInfo，回看优先）" : "rtsp://...（可空）";
+        inp4.title = ch.timeshift_url ? '原始 TimeShiftURL：' + ch.timeshift_url : '';
         inp4.style.cssText = 'width:100%;font-size:12px;padding:2px';
         inp4.oninput = function(){ _tcChEdit.list[i].rtsp_url = this.value; _tcChEdit.list[i]._manual = true; };
         td4.appendChild(inp4);
       } else {
-        td4.textContent = ch.rtsp_url || '—';
+        td4.textContent = tcReplayView(ch);
         td4.style.cssText = 'font-size:12px;color:#999;word-break:break-all;';
+        if (ch.timeshift_url) {
+          td4.title = 'TimeShiftURL（完整签名回看地址，含 AuthInfo）：' + ch.timeshift_url;
+          var tsTag = document.createElement('span');
+          tsTag.textContent = '签名';
+          tsTag.style.cssText = 'margin-left:6px;font-size:10px;padding:1px 5px;background:#f6ffed;color:#389e0d;border-radius:3px;white-space:nowrap';
+          td4.appendChild(tsTag);
+        } else if (ch.channel_sdp) {
+          td4.title = 'ChannelSDP（无签名；回看需 TimeShift=1 并走代理）：' + ch.channel_sdp;
+        }
       }
 
       tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3); tr.appendChild(td4);

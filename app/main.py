@@ -195,7 +195,7 @@ async def auth_and_security_middleware(request: Request, call_next):
         "default-src 'self'; "
         "script-src 'self' 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data: https:; "
+        "img-src 'self' data: http: https:; "
         "connect-src 'self'  http: https:;"
     )
     return response
@@ -440,6 +440,11 @@ async def import_channels(request: Request):
     except json.JSONDecodeError:
         raise HTTPException(400, "无效的 JSON 格式")
 
+    if not isinstance(raw_list, list) or not raw_list:
+        raise HTTPException(400, "导入数据里没有频道列表")
+    if len(raw_list) > 5000:
+        raise HTTPException(400, "一次最多导入 5000 个频道")
+
     channels = []
     for ch in raw_list:
         clean = _sanitize_record(ch, _CHANNEL_FIELDS)
@@ -450,6 +455,9 @@ async def import_channels(request: Request):
         if "enabled" not in clean:
             clean["enabled"] = True
         channels.append(clean)
+
+    if not channels:
+        raise HTTPException(400, "没有有效的频道（name/url 不能为空）")
 
     config.save_channels(channels)
     return {"success": True, "count": len(channels)}
@@ -864,6 +872,8 @@ async def add_epg_source(data: dict = Body(...)):
         raise HTTPException(400, "URL 不能为空")
     if len(url) > 2000:
         raise HTTPException(400, "URL 过长")
+    if not downloader._is_safe_http_url(url):
+        raise HTTPException(400, "URL 必须是 http:// 或 https://")
 
     source = {
         "url": url,
@@ -884,7 +894,10 @@ async def update_epg_source(index: int, data: dict = Body(...)):
         raise HTTPException(404, "源不存在")
     src = sources[index]
     if "url" in data:
-        src["url"] = str(data["url"])[:2000]
+        new_url = str(data["url"]).strip()[:2000]
+        if not downloader._is_safe_http_url(new_url):
+            raise HTTPException(400, "URL 必须是 http:// 或 https://")
+        src["url"] = new_url
     if "rule" in data:
         src["rule"] = str(data["rule"])[:20]
     if "enabled" in data:
@@ -909,7 +922,8 @@ async def delete_epg_source(index: int):
     sources = config.get_epg_sources()
     if index < 0 or index >= len(sources):
         raise HTTPException(404, "源不存在")
-    sources.pop(index)
+    removed = sources.pop(index)
+    downloader.clear_epg_failure(str(removed.get("url", "") or ""))
     config.save_epg_sources(sources)
     return {"success": True}
 
@@ -932,6 +946,11 @@ async def _run_epg_download():
             progress_callback=download_progress.add_message,
             log_callback=lambda msg: logger.log(msg),
         )
+        if not results:
+            await download_progress.add_message(
+                "⚠️ 没有启用的外部 EPG 源（请先在「外部EPG」里添加并启用源）"
+            )
+            return
         ok = sum(1 for r in results if r and r.get("success"))
         fail = sum(1 for r in results if r and not r.get("success"))
         if ok == 0:
@@ -952,7 +971,7 @@ async def _run_epg_download():
 
 @app.post("/api/epg/sources/{index}/download")
 async def download_single_epg_source(index: int):
-    """单独下载某一个 EPG 源，下载完自动合并（与全量下载行为一致）。"""
+    """单独下载某一个 EPG 源；合并/生成 XML 仍由「生成XML」按钮执行。"""
     if download_progress._running:
         return {"success": False, "error": "已有任务运行中，请稍候"}
 
@@ -977,7 +996,7 @@ async def download_single_epg_source(index: int):
 
 
 async def _run_single_epg_download(src: dict):
-    """单个 EPG 源下载任务：下载 → 合并 → 完成。"""
+    """单个 EPG 源下载任务：下载完成后提示手动合并/生成 XML。"""
     try:
         await download_progress.add_message(f"开始下载 EPG 源: {src.get('url', '')}")
         result = await downloader.download_epg_source(
@@ -1328,12 +1347,183 @@ async def get_epg_extracts():
     return {"extracts": config.get_epg_extracts()}
 
 
+def _find_epg_target(epg_channels, name, tvg_id="", exclude_logic_id=""):
+    """为外部 EPG 频道找一个已有 EPG 管理频道（用于自动并入）。
+
+    匹配优先级：频道名 → 源频道 ID（对 TVG-ID）→ TVG-Name。
+    同名有多个时优先电信频道，避免把外部节目并到另一个外部源的独立条目上。
+    """
+    name = str(name or "").strip()
+    tvg_id = str(tvg_id or "").strip()
+    exclude = str(exclude_logic_id or "")
+    candidates = [
+        ch for ch in epg_channels
+        if str(ch.get("logic_id", "") or "")
+        and str(ch.get("logic_id", "") or "") != exclude
+    ]
+    if not candidates:
+        return None
+
+    def pick(matches):
+        if not matches:
+            return None
+        def rank(ch):
+            st = str(ch.get("source_type", "") or "")
+            return {"telecom": 0, "manual": 1, "extract": 2}.get(st, 3)
+        return sorted(matches, key=rank)[0]
+
+    # 1) 频道名精确匹配：最符合「并入 EPG 管理已有频道」
+    if name:
+        hit = [ch for ch in candidates if str(ch.get("name", "")).strip() == name]
+        if hit:
+            return pick(hit)
+
+    # 2) 源频道 ID 对 EPG 管理的 TVG-ID
+    if tvg_id:
+        hit = [ch for ch in candidates if str(ch.get("tvg_id", "")).strip() == tvg_id]
+        if hit:
+            return pick(hit)
+
+    # 3) 深度清洗兜底匹配：解决 CCTV-1综合 / CCTV1 高清 / CCTV1 匹配不上的问题
+    def _norm(s):
+        s = str(s or "").strip()
+        # 去掉括号及括号内的内容
+        s = re.sub(r'[（(].*?[)）]', '', s)
+        # 去掉常见的后缀词
+        s = re.sub(r'(高清|超清|标清|蓝光|HD|FHD|UHD|4K|频道|综合|剧场|剧场版|专区)$', '', s, flags=re.IGNORECASE)
+        # 只保留中英文和数字，去掉所有空格、横杠、下划线、斜杠等符号
+        s = re.sub(r'[^\w\u4e00-\u9fa5]', '', s)
+        return s.lower()
+
+    # 把查询的条件和目标的属性全部拆解、清洗为集合
+    query_keys = set()
+    for p in re.split(r'[,，;；/]', name + "/" + tvg_id):
+        if p.strip():
+            query_keys.add(_norm(p))
+
+    if not query_keys:
+        return None
+
+    for ch in candidates:
+        ch_keys = set()
+        ch_fields = [
+            str(ch.get("name", "")),
+            str(ch.get("tvg_id", "")),
+            str(ch.get("tvg_name", ""))
+        ]
+        for f in ch_fields:
+            for p in re.split(r'[,，;；/]', f):
+                if p.strip():
+                    ch_keys.add(_norm(p))
+        
+        # 如果双方有任何一个清洗后的名字重合，就视为匹配
+        if query_keys & ch_keys:
+            return ch
+
+    return None
+
+
+# 替换为以下代码：
+def _sync_epg_target_meta(target, name, source):
+    """把外部源频道名写入目标 TVG-Name，并更新来源名称（强力清洗与去重）。"""
+    changed = False
+    name = str(name or "").strip()
+    
+    # 1. 剥离括号干扰：如 "zsdc1 (少儿动画)" -> "zsdc1"
+    clean_source = str(source or "").strip()
+    clean_source = re.sub(r'[（(].*?[)）]', '', clean_source).strip()
+
+    # 2. 处理 TVG-Name
+    if name:
+        current_tvg = str(target.get("tvg_name", "") or "").strip()
+        all_names = []
+        for n in re.split(r'[,，;；/]', current_tvg + "/" + name):
+            n = n.strip()
+            if n and n not in all_names:
+                all_names.append(n)
+        
+        new_tvg = "/".join(all_names)
+        if new_tvg != current_tvg:
+            target["tvg_name"] = new_tvg
+            changed = True
+
+    # 3. 处理来源
+    if clean_source:
+        current_src = str(target.get("source_remark", "") or "").strip()
+        all_srcs = []
+        for s in re.split(r'[,，;；/]', current_src + "/" + clean_source):
+            s = s.strip()
+            if s and s not in all_srcs:
+                all_srcs.append(s)
+        
+        new_src = "/".join(all_srcs)
+        if new_src != current_src:
+            target["source_remark"] = new_src
+            changed = True
+
+    if not str(target.get("source_type", "") or ""):
+        target["source_type"] = "extract"
+        changed = True
+
+    if str(target.get("source_type", "") or "") == "extract" and name:
+        if str(target.get("extract_name", "") or "") != name:
+            target["extract_name"] = name
+            changed = True
+    return changed
+
+    # 老数据没有 source_type 时标记为 extract，避免被「清理孤儿」误删
+    if not str(target.get("source_type", "") or ""):
+        target["source_type"] = "extract"
+        changed = True
+
+    # 目标本身是提取生成的独立频道时，同步 extract_name 便于来源列显示
+    if str(target.get("source_type", "") or "") == "extract" and name:
+        if str(target.get("extract_name", "") or "") != name:
+            target["extract_name"] = name
+            changed = True
+    return changed
+
+
+def _new_extract_epg_channel(epg_channels, name, source, logic_id, tvg_id=""):
+    """为没有可并入目标的提取记录新建一个独立 EPG 频道。"""
+    new_tvg = str(name or "").strip()
+    suffix = 2
+    taken = {str(c.get("tvg_id", "")) for c in epg_channels}
+    while new_tvg in taken:
+        new_tvg = f"{name}_{suffix}"
+        suffix += 1
+    channel = {
+        "name": name,
+        "tvg_id": new_tvg,
+        "tvg_name": name,
+        "logic_id": logic_id,
+        "source_type": "extract",
+        "source_remark": source,
+        "extract_name": name,
+        "enabled": True,
+        "sort_order": len(epg_channels),
+    }
+    epg_channels.append(channel)
+    return channel
+
+
 def _create_extract(extracts, epg_channels, name, source, source_url,
                     tvg_id, rule, target_logic_id):
-    """新建一条提取记录；独立频道时同步在 EPG 管理里建条目。
+    """新建一条提取记录；有匹配的 EPG 频道就并入，否则建独立频道。
 
-    返回 (extract, epg_created)
+    返回 (extract, epg_created, merged, updated)。
+    - merged：找到了已有 EPG 频道并写入 target_logic_id
+    - updated：目标频道的 TVG-Name / 来源确实发生变化
     """
+    target = None
+    if target_logic_id:
+        for ch in epg_channels:
+            if str(ch.get("logic_id", "")) == target_logic_id:
+                target = ch
+                break
+    if target is None:
+        target = _find_epg_target(epg_channels, name, tvg_id)
+
     if not tvg_id:
         max_id = 9999
         for e in extracts:
@@ -1352,38 +1542,68 @@ def _create_extract(extracts, epg_channels, name, source, source_url,
         "logic_id": str(uuid.uuid4()),
     }
 
-    valid_target = ""
-    if target_logic_id:
-        for ch in epg_channels:
-            if str(ch.get("logic_id", "")) == target_logic_id:
-                valid_target = target_logic_id
-                break
-    if valid_target:
-        extract["target_logic_id"] = valid_target
+    created = merged = updated = False
+    if target is not None:
+        extract["target_logic_id"] = str(target.get("logic_id", ""))
+        merged = True
+        updated = _sync_epg_target_meta(target, name, source)
+    else:
+        _new_extract_epg_channel(
+            epg_channels, name, source, extract["logic_id"], tvg_id)
+        created = True
 
     extracts.append(extract)
-    created = False
-    if not valid_target and not any(ch.get("name") == name for ch in epg_channels):
-        # tvg-id 用频道名（可读、和 display-name 一致），重名冲突时加后缀
-        new_tvg = name
-        suffix = 2
-        taken = {str(c.get("tvg_id", "")) for c in epg_channels}
-        while new_tvg in taken:
-            new_tvg = f"{name}_{suffix}"
-            suffix += 1
-        epg_channels.append({
-            "name": name,
-            "tvg_id": new_tvg,
-            "tvg_name": name,
-            "logic_id": extract["logic_id"],
-            "source_type": "extract",
-            "source_remark": source,
-            "extract_name": name,
-            "enabled": True,
-            "sort_order": len(epg_channels),
-        })
-        created = True
-    return extract, created
+    return extract, created, merged, updated
+
+
+def _reapply_extract(ext, epg_channels, name, source, tvg_id=""):
+    """重复添加时，把已有提取记录重新指向匹配频道并刷新 TVG-Name / 来源。"""
+    own_lid = str(ext.get("logic_id", "") or "")
+    target = None
+    old_target = str(ext.get("target_logic_id", "") or "")
+    if old_target:
+        target = next((ch for ch in epg_channels
+                       if str(ch.get("logic_id", "")) == old_target), None)
+    if target is None:
+        target = _find_epg_target(epg_channels, name, tvg_id, exclude_logic_id=own_lid)
+    if target is not None and str(target.get("logic_id", "")) == own_lid:
+        target = None
+
+    changed = False
+    if target is not None:
+        if old_target != str(target.get("logic_id", "")):
+            ext["target_logic_id"] = str(target.get("logic_id", ""))
+            changed = True
+        if source and str(ext.get("source", "") or "") != source:
+            ext["source"] = source
+            changed = True
+        if _sync_epg_target_meta(target, name, source):
+            changed = True
+
+        # 原来为这条提取记录生成过独立频道时，并入后删掉多余独立频道
+        if own_lid:
+            before = len(epg_channels)
+            epg_channels[:] = [
+                ch for ch in epg_channels
+                if str(ch.get("logic_id", "")) != own_lid
+            ]
+            if len(epg_channels) != before:
+                changed = True
+        return True, changed
+
+    # 没有别的目标：更新/补回自己的独立频道
+    if source and str(ext.get("source", "") or "") != source:
+        ext["source"] = source
+        changed = True
+    own = next((ch for ch in epg_channels
+                if str(ch.get("logic_id", "")) == own_lid), None)
+    if own is None:
+        _new_extract_epg_channel(epg_channels, name, source, own_lid)
+        changed = True
+    elif _sync_epg_target_meta(own, name, source):
+        changed = True
+    return False, changed
+
 
 
 @app.post("/api/epg/extracts")
@@ -1402,14 +1622,15 @@ async def add_epg_extract(data: dict = Body(...)):
         raise HTTPException(400, "字段过长")
 
     epg_channels = config.get_epg_channels()
-    extract, created = _create_extract(
+    extract, created, merged, updated = _create_extract(
         extracts, epg_channels, name, source, source_url, tvg_id, rule, target_logic_id)
 
     config.save_epg_extracts(extracts)
-    if created:
+    if created or updated:
         config.save_epg_channels(epg_channels)
 
-    return {"success": True, "extract": extract}
+    return {"success": True, "extract": extract,
+            "merged": merged, "updated": updated}
 
 
 @app.post("/api/epg/extracts/batch")
@@ -1423,9 +1644,13 @@ async def add_epg_extracts_batch(data: dict = Body(...)):
 
     extracts = config.get_epg_extracts()
     epg_channels = config.get_epg_channels()
-    existing = {(str(e.get("name", "")), str(e.get("source_url", ""))) for e in extracts}
+    existing_map = {}
+    for e in extracts:
+        key = (str(e.get("name", "")), str(e.get("source_url", "")))
+        existing_map.setdefault(key, e)
 
-    added = skipped = epg_created = 0
+    added = skipped = epg_created = merged_count = updated_count = 0
+    extracts_changed = epg_changed = False
     for it in items:
         if not isinstance(it, dict):
             skipped += 1
@@ -1435,27 +1660,49 @@ async def add_epg_extracts_batch(data: dict = Body(...)):
         source_url = str(it.get("source_url", "") or "").strip()[:2000]
         rule = str(it.get("rule", "auto") or "auto")[:20]
         target = str(it.get("target_logic_id", "") or "").strip()[:64]
+        source_tvg = str(it.get("tvg_id", "") or "").strip()
         if not name:
             skipped += 1
             continue
-        if (name, source_url) in existing:
+
+        key = (name, source_url)
+        if key in existing_map:
+            # 已存在也重新匹配一次：旧版本加过的记录可能没有 target_logic_id，
+            # 或目标频道的 TVG-Name / 来源还没写入，这里顺手补齐。
+            ext = existing_map[key]
+            merged, changed = _reapply_extract(
+                ext, epg_channels, name, source, source_tvg)
             skipped += 1
+            if merged:
+                merged_count += 1
+            if changed:
+                extracts_changed = epg_changed = True
+                updated_count += 1
             continue
 
-        _, created = _create_extract(
+        _, created, merged, updated = _create_extract(
             extracts, epg_channels, name, source, source_url,
-            it.get("tvg_id", ""), rule, target)
-        existing.add((name, source_url))
+            source_tvg, rule, target)
+        existing_map[key] = extracts[-1]
         added += 1
         if created:
             epg_created += 1
+            epg_changed = True
+        if merged:
+            merged_count += 1
+        if updated:
+            updated_count += 1
+            epg_changed = True
+        extracts_changed = True
 
-    if added:
+    if extracts_changed:
         config.save_epg_extracts(extracts)
+    if epg_changed:
         config.save_epg_channels(epg_channels)
 
     return {"success": True, "added": added, "skipped": skipped,
-            "epg_created": epg_created}
+            "epg_created": epg_created, "merged": merged_count,
+            "updated": updated_count}
 
 
 @app.put("/api/epg/extracts/{index}")
@@ -1472,19 +1719,27 @@ async def update_epg_extract(index: int, data: dict = Body(...)):
     if "target_logic_id" in data:
         tid = str(data.get("target_logic_id", "") or "").strip()[:64]
         epg_channels = config.get_epg_channels()
-        valid = bool(tid) and any(str(ch.get("logic_id", "")) == tid for ch in epg_channels)
-        
+        target_ch = next((ch for ch in epg_channels
+                          if str(ch.get("logic_id", "")) == tid), None)
+        valid = target_ch is not None
+
         if valid:
             ext["target_logic_id"] = tid
-            
+
+            # 手动并入时同样写入 TVG-Name（不同才写）和来源名称
+            meta_changed = _sync_epg_target_meta(
+                target_ch, ext.get("name", ""), ext.get("source", ""))
+
             # ★ 新增：如果并入了别的频道，且原本这个提取记录生成过一个独立的频道，自动把它删掉
             own_lid = str(ext.get("logic_id", "") or "")
+            new_channels = epg_channels
             if own_lid:
-                # 过滤掉逻辑 ID 等于本提取记录的独立频道
-                new_channels = [ch for ch in epg_channels if str(ch.get("logic_id", "")) != own_lid]
+                new_channels = [ch for ch in epg_channels
+                                if str(ch.get("logic_id", "")) != own_lid]
                 if len(new_channels) < len(epg_channels):
-                    config.save_epg_channels(new_channels)
                     logger.log(f"[EPG] 自动清理了因并入而多余的独立频道（Logic ID: {own_lid}）", category="EPG")
+            if meta_changed or len(new_channels) < len(epg_channels):
+                config.save_epg_channels(new_channels)
         else:
             ext.pop("target_logic_id", None)
     extracts[index] = ext
@@ -1500,29 +1755,61 @@ async def delete_epg_extract(index: int):
     deleted = extracts.pop(index)
     config.save_epg_extracts(extracts)
     
-    # ★ 新增：同步清理 EPG 管理里由该记录生成的独立频道
+    # 1. 清理由此记录生成的独立频道
     lid = deleted.get("logic_id")
-    if lid:
-        channels = config.get_epg_channels()
-        new_channels = [ch for ch in channels if str(ch.get("logic_id", "")) != str(lid)]
-        if len(new_channels) != len(channels):
-            config.save_epg_channels(new_channels)
-            logger.log(f"[EPG] 删除提取记录时，同步清理了对应的独立频道（Logic ID: {lid}）", category="EPG")
+    channels = config.get_epg_channels()
+    new_channels = [ch for ch in channels if str(ch.get("logic_id", "")) != str(lid)]
+    if len(new_channels) != len(channels):
+        channels = new_channels
+        logger.log(f"[EPG] 删除提取记录时，同步清理了对应的独立频道（Logic ID: {lid}）", category="EPG")
+
+    # 2. 从目标频道的来源中移除该记录的 source
+    target_lid = deleted.get("target_logic_id")
+    if target_lid:
+        del_src = str(deleted.get("source", "") or "").strip()
+        del_src = re.sub(r'[（(].*?[)）]', '', del_src).strip() # 剥离括号
+        if del_src:
+            for ch in channels:
+                if str(ch.get("logic_id")) == str(target_lid):
+                    current_src = str(ch.get("source_remark", "") or "")
+                    # 拆分 -> 剔除 -> 重组
+                    parts = [s.strip() for s in re.split(r'[,，;；/]', current_src) if s.strip()]
+                    if del_src in parts:
+                        parts.remove(del_src)
+                        ch["source_remark"] = "/".join(parts)
+                    break
+        config.save_epg_channels(channels)
+    elif len(new_channels) != len(channels) or target_lid:
+        config.save_epg_channels(channels)
             
     return {"success": True}
 
 @app.post("/api/epg/extracts/clear")
 async def clear_epg_extracts():
-    """一键清空所有提取记录"""
+    """一键清空所有提取记录，并重置 EPG 频道的来源"""
     config.save_epg_extracts([])
     
-    # ★ 新增：同步清理所有 source_type='extract' 的频道
+    # 动态获取当前生效的平台名称
+    active_platform = config.get_active_platform()
+    default_telecom_label = "电信源" if active_platform == "huawei" else "中兴源"
+
     channels = config.get_epg_channels()
-    new_channels = [ch for ch in channels if str(ch.get("source_type", "")) != "extract"]
-    if len(new_channels) != len(channels):
-        config.save_epg_channels(new_channels)
-        logger.log(f"[EPG] 清空提取记录，同时清理了 {len(channels) - len(new_channels)} 个独立频道", category="EPG")
-        
+    new_channels = []
+    for ch in channels:
+        st = str(ch.get("source_type", ""))
+        if st == "extract":
+            continue  # 纯提取生成的独立频道直接删掉
+        elif st == "telecom":
+            # 恢复为当前平台专属的干净标记
+            ch["source_remark"] = default_telecom_label 
+        elif st == "manual":
+            ch["source_remark"] = "手动添加"
+        else:
+            ch["source_remark"] = "自建json"
+        new_channels.append(ch)
+
+    config.save_epg_channels(new_channels)
+    logger.log(f"[EPG] 清空提取记录，同时重置了所有频道的来源", category="EPG")
     return {"success": True}
 
 @app.post("/api/epg/extracts/import")
@@ -1630,7 +1917,8 @@ async def _run_extract_to_json():
             date_progs = defaultdict(list)
             for prog in programmes:
                 start = prog.get("start", "")
-                d = start[:8] if len(start) >= 8 else ""
+                # ★ 统一成 YYYYMMDDHHMMSS 再取日期，兼容 2026-10-30 19:00:00 这种 ISO 时间
+                d = epg_parser.format_xmltv_time(start)[:8]
                 if d in extract_dates:
                     date_progs[d].append(prog)
 
@@ -1694,6 +1982,7 @@ async def extract_and_merge_all():
 
 
 async def _run_extract_and_merge():
+    """下载外部 EPG → 提取到 JSON → 重建 epg.xml（完整流程）。"""
     try:
         import time
         start_time = time.time()
@@ -1713,16 +2002,34 @@ async def _run_extract_and_merge():
 
         extracts = config.get_epg_extracts()
         epg_cache = config.CONFIG_DIR / "epg_cache"
+        json_dir = config.JSON_DIR
+        today = datetime.date.today()
+        # 与 xml_builder 一致：前 6 天 + 今天 + 后 2 天
+        extract_dates = [
+            (today + datetime.timedelta(days=i)).strftime("%Y%m%d")
+            for i in range(-6, 3)
+        ]
+        epg_name_map = {}
+        for ech in config.get_epg_channels():
+            lid = ech.get("logic_id", "")
+            if lid:
+                epg_name_map[lid] = ech.get("name", "")
+
         logger.log(f"[EPG] [第2步] 开始逐条提取节目单（共 {len(extracts)} 条记录）...", category="EPG")
         await download_progress.add_message(f"[第2步] 开始逐条提取节目单（共 {len(extracts)} 条记录）...")
 
         total_programmes = 0
         extract_success = 0
         extract_fail = 0
+        saved_files = 0
         for idx, ext in enumerate(extracts, 1):
-            name = ext.get("name", "未知")
+            raw_name = ext.get("name", "未知")
             rule = ext.get("rule", "auto")
             source_url = ext.get("source_url", "")
+            _tgt = str(ext.get("target_logic_id", "") or "")
+            _own = str(ext.get("logic_id", "") or "")
+            save_name = (epg_name_map.get(_tgt) or epg_name_map.get(_own)
+                         or raw_name)
 
             # ★ 修复：用 resolve_cache_files 精确匹配，不再用 "cache_name in cf.name" 子串
             programmes = []
@@ -1731,26 +2038,58 @@ async def _run_extract_and_merge():
                     cache_text = cf.read_text(encoding="utf-8")
                 except Exception:
                     continue
-                progs = epg_parser.extract_programmes(cache_text, rule, name)
+                progs = epg_parser.extract_programmes(cache_text, rule, raw_name)
                 if progs:
                     programmes.extend(progs)
                     break
 
             if not programmes:
-                logger.log(f"[EPG]   [{idx}/{len(extracts)}] {name}: ⚠️ 未找到对应缓存或节目为空，跳过", category="EPG")
-                await download_progress.add_message(f"  [{idx}/{len(extracts)}] {name}: 未找到对应的 EPG 缓存文件或节目为空")
+                logger.log(f"[EPG]   [{idx}/{len(extracts)}] {raw_name}: ⚠️ 未找到对应缓存或节目为空，跳过", category="EPG")
+                await download_progress.add_message(f"  [{idx}/{len(extracts)}] {raw_name}: 未找到对应的 EPG 缓存文件或节目为空")
                 extract_fail += 1
                 continue
+
+            # ★ 修复：这里原来只统计、不写 JSON，导致「提取合并」后 XML 还是旧数据
+            date_progs = defaultdict(list)
+            for prog in programmes:
+                start = prog.get("start", "")
+                # ★ 统一成 YYYYMMDDHHMMSS 再取日期，兼容 2026-10-30 19:00:00 这种 ISO 时间
+                d = epg_parser.format_xmltv_time(start)[:8]
+                if d in extract_dates:
+                    date_progs[d].append(prog)
+
+            safe = config.safe_filename(save_name)
+            json_dir.mkdir(parents=True, exist_ok=True)
+            for d, progs in date_progs.items():
+                save_path = json_dir / f"{safe}_{d}.json"
+                prog_list = [
+                    {"name": raw_name, "start": p.get("start", ""),
+                     "stop": p.get("stop", ""), "title": p.get("title", ""),
+                     "desc": p.get("desc", "")}
+                    for p in progs
+                ]
+                try:
+                    tmp = save_path.with_name(save_path.name + ".tmp")
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        json.dump({"programmes": prog_list}, f, ensure_ascii=False)
+                    tmp.replace(save_path)
+                    saved_files += 1
+                except Exception as e:
+                    logger.log(f"[EPG] 保存 {save_name} {d} 失败: {e}", category="失败")
 
             count = len(programmes)
             total_programmes += count
             extract_success += 1
             await download_progress.add_message(
-                f"  [{idx}/{len(extracts)}] {name}: 从 {source_url.split('/')[-1][:30]} 提取到 {count} 条节目")
+                f"  [{idx}/{len(extracts)}] {raw_name}: 从 {source_url.split('/')[-1][:30]} 提取到 {count} 条节目")
 
         elapsed = int(time.time() - start_time)
-        logger.log(f"[EPG] [第2步] 提取完成: 成功 {extract_success} 条, 失败 {extract_fail} 条, 共 {total_programmes} 条节目, 耗时 {elapsed}秒", category="EPG")
-        await download_progress.add_message(f"[第2步] 提取完成，共 {total_programmes} 条节目")
+        logger.log(
+            f"[EPG] [第2步] 提取完成: 成功 {extract_success} 条, 失败 {extract_fail} 条, "
+            f"共 {total_programmes} 条节目, 写入 {saved_files} 个JSON, 耗时 {elapsed}秒",
+            category="EPG")
+        await download_progress.add_message(
+            f"[第2步] 提取完成，共 {total_programmes} 条节目（写入 {saved_files} 个 JSON）")
 
         logger.log("[EPG] [第3步] 生成自建 XML 文件...", category="EPG")
         await download_progress.add_message("[第3步] 生成自建 XML 文件...")
@@ -1775,6 +2114,11 @@ async def _run_extract_and_merge():
         await download_progress.add_message(f"❌ 错误: {str(e)}")
         import traceback
         await download_progress.add_message(traceback.format_exc())
+    finally:
+        # ★ 修复：原来没有 finally，任务结束后 _running 永远为 True，后续任务全被挡住
+        download_progress._running = False
+        download_progress._paused = False
+        download_progress._stopped = False
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1972,30 +2316,25 @@ async def download_m3u_url_api(data: dict = Body(...)):
 
 @app.get("/api/m3u")
 async def list_m3u_files():
+    """列出 m3u / m3u8 / txt 文件（TXT 是电信 sctv.txt 等，必须能在这里看到）。"""
     files = []
-    for f in sorted(config.M3U_DIR.glob("*.m3u")):
+    allowed = (".m3u", ".m3u8", ".txt")
+    for f in sorted(config.M3U_DIR.iterdir()):
+        if not f.is_file() or f.suffix.lower() not in allowed:
+            continue
         try:
-            content = f.read_text(encoding="utf-8")
-            parsed = m3u_handler.parse_m3u(content)
+            content = f.read_text(encoding="utf-8", errors="replace")
+            if f.suffix.lower() == ".txt":
+                parsed = m3u_handler.parse_txt(content)
+            else:
+                parsed = m3u_handler.parse_m3u(content)
             files.append({
                 "name": f.name,
                 "path": str(f),
                 "size": f.stat().st_size,
                 "mtime": datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
                 "channel_count": len(parsed["entries"]),
-            })
-        except Exception:
-            pass
-    for f in sorted(config.M3U_DIR.glob("*.m3u8")):
-        try:
-            content = f.read_text(encoding="utf-8")
-            parsed = m3u_handler.parse_m3u(content)
-            files.append({
-                "name": f.name,
-                "path": str(f),
-                "size": f.stat().st_size,
-                "mtime": datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                "channel_count": len(parsed["entries"]),
+                "is_txt": f.suffix.lower() == ".txt",
             })
         except Exception:
             pass
@@ -2049,7 +2388,10 @@ async def get_m3u_content(filename: str, merge: bool = Query(True)):
     if not path.exists() or not path.is_file():
         raise HTTPException(404, "文件不存在")
     content = path.read_text(encoding="utf-8")
-    parsed = m3u_handler.parse_m3u(content, merge_duplicates=merge)
+    if safe.lower().endswith(".txt"):
+        parsed = m3u_handler.parse_txt(content)
+    else:
+        parsed = m3u_handler.parse_m3u(content, merge_duplicates=merge)
     return {"content": content, "parsed": parsed}
 
 
@@ -2063,7 +2405,11 @@ async def save_m3u_content(filename: str, data: dict = Body(...)):
     header = data.get("header", "")
     if not isinstance(entries, list):
         raise HTTPException(400, "无效的 entries")
-    content = m3u_handler.rebuild_m3u(entries, header)
+    # TXT 有独立格式，不能写成 M3U（否则编辑 sctv.txt 会把它变成 M3U）
+    if safe.lower().endswith(".txt"):
+        content = m3u_handler.rebuild_txt(entries)
+    else:
+        content = m3u_handler.rebuild_m3u(entries, header)
     tmp = path.with_name(path.name + ".tmp")   # ★ 本次：统一命名
     tmp.write_text(content, encoding="utf-8")
     tmp.replace(path)
@@ -2184,10 +2530,13 @@ async def channels_overview(source: str = "telecom"):
             name = str(ch.get("name", "") or "")
             mcast = str(ch.get("channel_url", "") or "")
             rtsp = str(ch.get("rtsp_url", "") or "")
+            catchup_source = rtsp
 
             if platform == "zte":
                 live = zte_epg.zte_live_url(ch, platform_cfg)
                 catchup = zte_epg.zte_catchup_url(ch, platform_cfg)
+                # 中兴：优先展示完整签名回看地址（TimeShiftURL）
+                catchup_source = str(ch.get("timeshift_url") or rtsp)
             else:
                 live = ""
                 if mcast:
@@ -2219,7 +2568,7 @@ async def channels_overview(source: str = "telecom"):
                 "name": name,
                 "live": live,
                 "catchup": catchup,
-                "catchup_source": rtsp,
+                "catchup_source": catchup_source,
                 "tvg_id": str(ch.get("tvg_id", "") or name),
                 "tvg_name": name,
                 # ★ 与「频道管理」同一套规则：本站 /api/download/，外部台标服务器 /logo/
@@ -2652,10 +3001,16 @@ def _resolve_download(filepath: str, kind: str = ""):
 
     # 显式类型前缀：/api/download/share/a/b.txt
     first, sep, rest = filepath.partition("/")
-    if rest and first in _DOWNLOAD_KINDS and not kind:
-        kind, filepath = first, rest
-        if not filepath:
-            return None, None
+    if rest and first in _DOWNLOAD_KINDS:
+        if not kind:
+            kind, filepath = first, rest
+            if not filepath:
+                return None, None
+        elif first == kind:
+            # 已用 ?type=share 指定类型时，路径里再带 share/ 前缀也能正确解析
+            filepath = rest
+            if not filepath:
+                return None, None
 
     for name, base, exts in sources:
         if kind and name != kind:
@@ -2680,7 +3035,7 @@ def _resolve_download(filepath: str, kind: str = ""):
 
         if not target.is_file():
             continue
-        if target.name.endswith(".tmp"):
+        if target.name.lower().endswith(".tmp"):
             continue
         if exts is not None and target.suffix.lower() not in exts:
             continue
@@ -2728,54 +3083,3 @@ async def download_unified(request: Request, filepath: str,
             "Access-Control-Allow-Origin": "*",
         },
     )
-
-# ════════════════════════════════════════════════════════════════
-# ⭐ 批量操作
-# ════════════════════════════════════════════════════════════════
-
-@app.post("/api/epg-channels/batch-delete")
-async def batch_delete_epg_channels(data: dict = Body(...)):
-    """批量删除 EPG 频道"""
-    targets = data.get("targets", []) # 传入 logic_id 列表
-    if not isinstance(targets, list) or not targets:
-        raise HTTPException(400, "未提供要删除的频道")
-    
-    channels = config.get_epg_channels()
-    extracts = config.get_epg_extracts()
-    
-    # 过滤保留不需要删除的
-    new_channels = [ch for ch in channels if str(ch.get("logic_id", "")) not in targets]
-    if len(new_channels) == len(channels):
-        return {"success": True, "count": 0}
-        
-    config.save_epg_channels(new_channels)
-    
-    # 同步清理提取记录
-    new_extracts = [
-        e for e in extracts 
-        if str(e.get("target_logic_id", "")) not in targets and str(e.get("logic_id", "")) not in targets
-    ]
-    if len(new_extracts) != len(extracts):
-        config.save_epg_extracts(new_extracts)
-        
-    return {"success": True, "count": len(channels) - len(new_channels)}
-
-
-@app.post("/api/epg-channels/batch-toggle")
-async def batch_toggle_epg_channels(data: dict = Body(...)):
-    """批量启用/禁用 EPG 频道"""
-    targets = data.get("targets", [])
-    enabled = bool(data.get("enabled", True))
-    if not isinstance(targets, list) or not targets:
-        raise HTTPException(400, "未提供要操作的目标")
-        
-    channels = config.get_epg_channels()
-    count = 0
-    for ch in channels:
-        if str(ch.get("logic_id", "")) in targets:
-            ch["enabled"] = enabled
-            count += 1
-            
-    if count > 0:
-        config.save_epg_channels(channels)
-    return {"success": True, "count": count}

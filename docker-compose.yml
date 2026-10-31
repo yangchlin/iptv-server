@@ -30,10 +30,6 @@ services:
     stop_grace_period: 30s
     ports:
       - "${WEB_PORT:-5673}:80"
-      # 中兴平台内置 RTSP 回看代理（默认关闭）。不用中兴回看时保持注释，避免宿主机
-      # 554 端口被占用导致容器起不来；需要时取消下面一行注释，并在页面
-      # 「电信EPG → 中兴平台」里启用代理（容器内监听端口保持 554）。
-      # - "${RTSP_PROXY_PORT:-554}:554"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PYTHONUNBUFFERED: "1"

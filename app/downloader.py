@@ -45,6 +45,10 @@ _PRIVATE_NETS = [
 # 全局 HTTP 客户端
 _client: Optional[httpx.AsyncClient] = None
 
+# EPG 源失败告警：url -> {url, remark, error, ts}
+# （前端导航栏红点 / 「外部EPG」页状态会读它）
+_epg_failures: dict = {}
+
 def get_epg_failures() -> list:
     """返回失败列表副本（供路由读取）。"""
     return [
@@ -60,6 +64,19 @@ def clear_epg_failure(url: str = ""):
         _epg_failures.pop(url, None)
     else:
         _epg_failures.clear()
+
+
+def _record_epg_failure(url: str, remark: str, error: str) -> None:
+    """记录 EPG 源失败（限制条数，避免异常源把内存撑大）。"""
+    _epg_failures[url] = {
+        "url": url,
+        "remark": str(remark or ""),
+        "error": str(error or ""),
+        "ts": time.time(),
+    }
+    if len(_epg_failures) > 200:
+        for old in sorted(_epg_failures, key=lambda k: _epg_failures[k].get("ts", 0))[:50]:
+            _epg_failures.pop(old, None)
 
 
 def get_client() -> httpx.AsyncClient:
@@ -163,7 +180,7 @@ async def download_json(url: str, save_path: Path) -> dict:
                 result["error"] = f"文件超过 {_JSON_MAX_BYTES // 1024 // 1024}MB 上限"
                 return result
 
-        text = content.decode("utf-8", errors="replace")
+        text = content.decode("utf-8", errors="replace").lstrip("\ufeff")
         # 校验 JSON 合法后再写盘
         json.loads(text)
 
@@ -202,7 +219,8 @@ async def download_channel_json(
 
     for date_str in dates:
         url = replace_date_in_url(url_template, date_str)
-        save_name = f"{name}_{date_str}.json"
+        # ★ 频道名可能带 / : 等非法字符，落盘统一走 safe_filename（与 xml_builder 一致）
+        save_name = f"{config.safe_filename(name)}_{date_str}.json"
         save_path = config.JSON_DIR / save_name
 
         today = datetime.date.today()
@@ -368,7 +386,7 @@ async def _fetch_epg_raw(url: str):
     except httpx.HTTPStatusError as e:
         return None, f"HTTP {e.response.status_code}"
     except httpx.TimeoutException:
-        return None, "超时：服务器 30 秒内没有响应（网络不通或该源太慢）"
+        return None, "超时：连接 10 秒 / 读取 60 秒内服务器没有响应（网络不通或该源太慢）"
     except httpx.RequestError as e:
         detail = str(e) or type(e).__name__
         return None, f"请求失败: {detail}"
@@ -392,6 +410,7 @@ async def download_epg_source(source: dict,
         return None
     if not _is_safe_http_url(url):
         msg = f"[EPG] ({index}/{total}) URL 不允许: {url}"
+        _record_epg_failure(url, source.get("remark", ""), "URL 不允许")
         if log_callback:
             log_callback(msg)
         return {"url": url, "rule": rule, "success": False,
@@ -426,12 +445,7 @@ async def download_epg_source(source: dict,
 
         if raw is None:
             result["error"] = err
-            _epg_failures[url] = {
-                "url": url,
-                "remark": str(source.get("remark", "") or ""),
-                "error": err,
-                "ts": time.time(),
-            }
+            _record_epg_failure(url, source.get("remark", ""), err)
             msg3 = f"[EPG] ({index}/{total}) 失败: {url} ✗ {err}"
             if log_callback:
                 log_callback(msg3)
@@ -442,16 +456,39 @@ async def download_epg_source(source: dict,
         # 成功：清掉告警
         _epg_failures.pop(url, None)
 
-        # gzip 自动解压
+        if not raw.strip():
+            err = "内容为空（服务器返回 0 字节）"
+            result["error"] = err
+            _record_epg_failure(url, source.get("remark", ""), err)
+            if log_callback:
+                log_callback(f"[EPG] ({index}/{total}) 失败: {url} ✗ {err}")
+            return result
+
+        # gzip 自动解压（限制解压后大小，防 gzip 炸弹）
         if url.endswith(".gz") or raw[:2] == b"\x1f\x8b":
             try:
                 buf = io.BytesIO(raw)
                 with gzip.GzipFile(fileobj=buf) as gz:
-                    raw = gz.read()
+                    raw = gz.read(_EPG_MAX_BYTES + 1)
             except Exception:
-                pass  # 不是有效 gzip，按原样处理
+                # 不是有效 gzip，按原样处理
+                pass
+            if len(raw) > _EPG_MAX_BYTES:
+                err = f"解压后超过 {_EPG_MAX_BYTES // 1024 // 1024}MB 上限"
+                result["error"] = err
+                _record_epg_failure(url, source.get("remark", ""), err)
+                if log_callback:
+                    log_callback(f"[EPG] ({index}/{total}) 失败: {url} ✗ {err}")
+                return result
 
         xml_text = raw.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        if not xml_text.strip():
+            err = "内容为空（解压/解码后没有有效文本）"
+            result["error"] = err
+            _record_epg_failure(url, source.get("remark", ""), err)
+            if log_callback:
+                log_callback(f"[EPG] ({index}/{total}) 失败: {url} ✗ {err}")
+            return result
 
         save_path = config.CONFIG_DIR / "epg_cache" / save_name
         save_path.parent.mkdir(parents=True, exist_ok=True)
@@ -475,12 +512,7 @@ async def download_epg_source(source: dict,
 
     except Exception as e:
         result["error"] = f"未知错误: {e}"
-        _epg_failures[url] = {
-            "url": url,
-            "remark": str(source.get("remark", "") or ""),
-            "error": result["error"],
-            "ts": time.time(),
-        }
+        _record_epg_failure(url, source.get("remark", ""), result["error"])
         if log_callback:
             log_callback(f"[EPG] ({index}/{total}) 失败: {url} ✗ {result['error']}")
 
@@ -553,6 +585,21 @@ def cleanup_old_files(log_callback=None) -> list:
                         deleted.append(msg)
                 except OSError:
                     pass
+
+    # 崩溃残留的临时文件（*.tmp）超过 1 天就清掉，避免越积越多
+    for d in (config.JSON_DIR, config.M3U_DIR, config.XML_DIR,
+              config.CONFIG_DIR, epg_cache):
+        if not d.exists():
+            continue
+        for f in d.glob("*.tmp"):
+            try:
+                if time.time() - f.stat().st_mtime > 86400:
+                    f.unlink()
+                    msg = f"[清理] 删除残留临时文件: {f.name}"
+                    do_log(msg)
+                    deleted.append(msg)
+            except OSError:
+                pass
 
     if not deleted:
         do_log("[清理] 无需清理")

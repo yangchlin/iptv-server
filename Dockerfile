@@ -21,6 +21,7 @@ ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
     TZ=Asia/Shanghai
 
 WORKDIR /app
@@ -50,6 +51,7 @@ RUN apt-get update \
         nginx \
         tini \
         nano \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # ==========================================
