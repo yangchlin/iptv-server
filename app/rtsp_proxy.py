@@ -239,6 +239,11 @@ class RtspProxy:
             req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
             req = _translate_request(req)
 
+            resp = _exchange(upstream, req)
+            if not resp:
+                self.log("服务器无响应，关闭连接")
+                return upstream
+
             if round_no == 1 and b"session:" not in resp.lower():
                 new = self._follow_redirect(upstream, req, bad_server)
                 if new:
@@ -448,19 +453,18 @@ def _to_describe(request: bytes) -> bytes:
 
 
 def _translate_request(request: bytes) -> bytes:
-    """中兴回看 / 直播地址翻译。"""
+    """中兴回看 / 直播地址翻译（与原始 rtspsproxy.py 的 Translator 一致）。"""
     text = request.decode("utf-8", "replace")
     if "playseek" in text:
-        # 将播放器请求的 PLTV/xxx.smil 翻译成服务器要的 live/xxx.sdp
-        text = text.replace("/PLTV/", "/live/").replace(".smil?", ".sdp?")
-        
-        # 将 playseek=xxxx-yyyy 翻译成 programbegin=xxxx+08&programend=yyyy+08
         m = re.search(r'playseek=\d{14}-\d{14}', text)
-        if m:
-            seek = m.group(0)
+        seek = m.group(0) if m else ""
+        if seek:
             program = seek.replace("playseek", "programbegin").replace("-", "+08&programend=") + "+08"
-            text = text.replace(seek, program)
-    
+            text = (text.replace("TVOD", "live")
+                        .replace("smil?", "mpg?vcdnid=001&boid=001&contname=&")
+                        .replace(seek, program))
+    else:
+        text = text.replace("PLTV", "live").replace("smil", "sdp?vcdnid=001")
     return text.encode("utf-8")
 
 
