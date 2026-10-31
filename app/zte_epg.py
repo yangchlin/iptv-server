@@ -652,8 +652,8 @@ def _replay_suffix(rtsp_url: str) -> str:
 
 
 # 最终回看地址格式（与用户环境实际生成的格式一致）：
-#   ...AuthInfo=...&playseek=${(b)yyyyMMddHHmmss}+08&programend=${(e)yyyyMMddHHmmss}+08
-_PLAYSEEK_SIGNED = ("playseek=${(b)yyyyMMddHHmmss}+08"
+#   ...AuthInfo=...&programbegin=${(b)yyyyMMddHHmmss}+08&programend=${(e)yyyyMMddHHmmss}+08
+_PLAYSEEK_SIGNED = ("programbegin=${(b)yyyyMMddHHmmss}+08"
                     "&programend=${(e)yyyyMMddHHmmss}+08")
 # 代理回退仍用原始脚本的 “-” 区间格式：
 # 代理的 _translate_request 靠它识别回看并转成 programbegin/programend
@@ -661,16 +661,25 @@ _PLAYSEEK_PROXY = "playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}"
 
 
 def _append_playseek(url: str, template: str = _PLAYSEEK_SIGNED) -> str:
-    """给回看地址追加时间模板；已有 playseek 则不动，注意 ? / & 和结尾的 ?。"""
+    """给回看地址追加时间模板。
+
+    不管原始 URL 里带的是 playseek / programbegin / programend，
+    一律先砍掉尾巴，再统一追加标准模板——
+    否则运营商的模板或历史缓存里的脏参数会被原样保留，导致服务器解析失败。
+    """
     s = str(url or "").strip()
     if not s:
         return ""
-    low = s.lower()
-    if "playseek=" in low or "programend=" in low:
-        return s
-    if s.endswith("?") or s.endswith("&"):
-        return s + template
-    return f"{s}&{template}" if "?" in s else f"{s}?{template}"
+
+    # 砍掉从第一个时间参数开始的全部内容（签名参数 AuthInfo/stbid 都在它们前面）
+    s = re.split(r'[?&](?:playseek|programbegin|programend)=',
+                 s, flags=re.IGNORECASE)[0]
+    s = s.rstrip('?&')
+    if not s:
+        return ""
+
+    sep = '&' if '?' in s else '?'
+    return f"{s}{sep}{template}"
 
 
 def _looks_signed(url: str) -> bool:
