@@ -220,6 +220,7 @@ class RtspProxy:
 
     # ── 握手阶段 ──
     # ── 握手阶段 ──
+    # ── 握手阶段 ──
     def _handshake(self, client: socket.socket, upstream: socket.socket,
                    addr) -> Optional[socket.socket]:
         location = ""
@@ -236,22 +237,29 @@ class RtspProxy:
             method = req.split(b" ", 1)[0].strip().upper()
             client_host, client_port = _url_host_port(req, default_port=client_port)
 
-            # 如果已经知道了边缘节点地址，之后的请求（SETUP, PLAY）直接发给边缘节点
             if location:
+                # 第二次及之后的请求，发给边缘节点
                 req_text = req.decode("utf-8", "replace")
-                m = re.search(r'playseek=(\d{14})-(\d{14})', req_text)
+                req_url = req_text.split("\r\n")[0].split(" ")[1]
+                
+                # 提取 playseek 并替换
+                m = re.search(r'playseek=(\d{14})-(\d{14})', req_url)
                 if m:
                     start, end = m.group(1), m.group(2)
-                    time_params = f"programbegin={start}+08&programend={end}+08"
-                else:
-                    time_params = ""
+                    req_url = req_url.replace(m.group(0), f"programbegin={start}+08&programend={end}+08")
                 
-                sep = "&" if "?" in location else "?"
-                new_url = f"{location}{sep}{time_params}" if time_params else location
+                # 使用 location 的 base 路径
+                loc_base = location.split("?")[0]
+                loc_query = location.split("?", 1)[1] if "?" in location else ""
+                
+                # 合并 location 的 query 和 原始请求的 query
+                req_query = req_url.split("?", 1)[1] if "?" in req_url else ""
+                merged_query = "&".join(filter(None, [loc_query, req_query]))
+                
+                new_url = f"{loc_base}?{merged_query}"
                 req = _set_request_url(req, new_url)
                 req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
             else:
-                # 第一次请求（DESCRIBE）：发给中心服务器
                 req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
                 req = _translate_request(req)
 
@@ -260,34 +268,34 @@ class RtspProxy:
                 self.log("服务器无响应，关闭连接")
                 return upstream
 
-            # ★ 核心修复：如果在中心服务器收到了 302 重定向
+            # ★ 处理 302 重定向，保存 location 并立刻重连
             if not location and resp.startswith(b"RTSP/1.0 302"):
                 location = _get_location(resp)
                 th, tp = _url_host_port_from_text(location)
                 if th and (not bad_server or th != bad_server):
-                    self.log(f"收到重定向，改连边缘节点 {th}:{tp}")
+                    self.log(f"收到 302 重定向，改连边缘节点 {th}:{tp}")
                     target_host, target_port = th, tp
                     try:
                         upstream.close()
-                        # 立刻连接到边缘节点
                         upstream = socket.create_connection((target_host, target_port), timeout=10)
                         
-                        # 把刚才的请求组装上时间参数，重新发给边缘节点
+                        # 立即把当前的请求（带上所有原始参数）发给边缘节点
                         req_text = req.decode("utf-8", "replace")
-                        m = re.search(r'playseek=(\d{14})-(\d{14})', req_text)
+                        req_url = req_text.split("\r\n")[0].split(" ")[1]
+                        m = re.search(r'playseek=(\d{14})-(\d{14})', req_url)
                         if m:
                             start, end = m.group(1), m.group(2)
-                            time_params = f"programbegin={start}+08&programend={end}+08"
-                        else:
-                            time_params = ""
-                        sep = "&" if "?" in location else "?"
-                        new_url = f"{location}{sep}{time_params}" if time_params else location
+                            req_url = req_url.replace(m.group(0), f"programbegin={start}+08&programend={end}+08")
                         
-                        # 替换 URL 和 Host 发给边缘节点
+                        loc_base = location.split("?")[0]
+                        loc_query = location.split("?", 1)[1] if "?" in location else ""
+                        req_query = req_url.split("?", 1)[1] if "?" in req_url else ""
+                        merged_query = "&".join(filter(None, [loc_query, req_query]))
+                        
+                        new_url = f"{loc_base}?{merged_query}"
                         new_req = _set_request_url(req, new_url)
                         new_req = _rewrite_host(new_req, f"rtsp://{target_host}:{target_port}")
                         
-                        # 获取边缘节点的 200 OK 响应
                         resp = _exchange(upstream, new_req)
                         if not resp:
                             self.log("边缘节点无响应")
@@ -296,11 +304,9 @@ class RtspProxy:
                         self.log(f"连接边缘节点失败: {e}")
                         return upstream
 
-            # 把最终的 200 OK 响应发给客户端
             to_client = _rewrite_response(resp, client_host, client_port)
             client.sendall(to_client)
 
-            # PLAY 的响应发完，就可以开始透传数据了
             if method == b"PLAY" and resp.startswith(b"RTSP/1.0 200"):
                 break
 
