@@ -42,7 +42,7 @@ _ALLOWED_TELECOM_KEYS = {
     "enabled", "AuthenticationIP", "key", "UserID", "mac", "STBID", "ip",
     "STBType", "STBVersion", "UserAgent", "Authenticator", "RTP2HTTPD",
     "templateName", "areaId", "epg_server_url", "epgname", "logo_url",
-    "merge_output_files", "auth_require_key", "enable_group", "r2h_token",
+    "merge_output_files", "auth_require_key", "enable_group", "r2h_token","epg_days",
 }
 # 布尔类型字段（其余按字符串处理）
 _TELECOM_BOOL_KEYS = {"enabled", "merge_output_files", "auth_require_key", "enable_group"}
@@ -234,6 +234,11 @@ def _sanitize_telecom_config(raw: Any) -> dict:
             continue
         if k in _TELECOM_BOOL_KEYS:
             out[k] = bool(v)
+        elif k == "epg_days":
+            try:
+                out[k] = int(v)
+            except (TypeError, ValueError):
+                out[k] = 7
         else:
             out[k] = str(v)[:2000] if v is not None else ""
     return out
@@ -264,9 +269,10 @@ def _sanitize_channels(raw: Any) -> list:
     return out
 
 
-def _apply_schedule(data: dict, settings: dict) -> bool:
-    """★ 校验 schedule.time / interval_days 后写入 settings。返回是否发生改动。"""
+def _apply_schedule(data: dict, settings: dict) -> list:
+    """★ 校验 schedule.time / interval_days 后写入 settings。返回错误提示列表。"""
     changed = False
+    warnings = []
     for key, prefix in (("channels", "telecom_channels"), ("epg", "telecom_epg")):
         item = (data.get("schedule") or {}).get(key) or {}
         if not isinstance(item, dict):
@@ -285,14 +291,18 @@ def _apply_schedule(data: dict, settings: dict) -> bool:
             if _TIME_RE.match(t):                  # ★ 只接受 HH:MM
                 settings[f"{prefix}_cron_time"] = t
                 changed = True
+            else:
+                task_name = "频道刷新" if key == "channels" else "EPG下载"
+                warnings.append(f"{task_name}的时间格式不合法({t})，已跳过")
 
         if "interval_days" in item:
             try:
                 settings[f"{prefix}_cron_interval"] = max(1, min(int(item["interval_days"]), 365))
                 changed = True
             except (TypeError, ValueError):
-                pass
-    return changed
+                task_name = "频道刷新" if key == "channels" else "EPG下载"
+                warnings.append(f"{task_name}的间隔天数不合法")
+    return warnings
 
 
 def _sanitize_channel_arg(v: Any, max_len: int = 200) -> str:
@@ -355,10 +365,10 @@ async def save_telecom_config_api(data: dict = Body(...)):
     if "auto_fetch_channels" in data:
         s["telecom_epg_auto_fetch_channels"] = bool(data["auto_fetch_channels"])
 
-    _apply_schedule(data, s)
+    _warns = _apply_schedule(data, s)
     config.save_settings(s)
     scheduler.reschedule()
-    return {"success": True, "message": "配置已保存"}
+    return {"success": True, "message": "配置已保存", "warnings": _warns}
 
 
 # ════════════════════════════════════════════════════════════════
@@ -719,7 +729,9 @@ async def download_all_epg_api(request: Request, data: dict = Body(...)):
         return {"success": False, "message": "有其他下载/提取任务在运行，请稍候"}
 
     config_data = _fill_output_urls(_get_effective_config(data), request, persist=True)
-    days = _parse_days(data, 3)
+    # 优先用前端传的，否则读配置里的天数
+    default_days = int(config_data.get("epg_days", 7))
+    days = _parse_days(data, default_days)
     force = bool(data.get("force_refresh_channels", False))
     auto_fetch = bool(
         data.get("auto_fetch_channels",

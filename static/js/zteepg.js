@@ -208,23 +208,41 @@
           <span style="font-size:11px;color:var(--text-secondary)">留空也行：生成 m3u/txt 时会自动补</span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>epg_server_url</label><input id="ztEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateZteUrlPreview()"></div>
-          <div class="form-group" style="flex:1 1 120px;margin-bottom:0"><label style="cursor:help;" title="系统固定为 epg.xml，不可修改">epgname (🔒只读)</label><input id="ztEpgName" value="${escAttr(c.epgname || 'epg.xml')}" readonly style="background:#f5f5f5;color:#888;cursor:not-allowed;"></div>
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>live_proxy（组播转单播）</label><input id="ztLiveProxy" value="${escAttr(c.live_proxy)}" placeholder="http://192.168.100.1:4022"></div>
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>replay_proxy（回看地址）</label><input id="ztReplayProxy" value="${escAttr(c.replay_proxy)}" placeholder="rtsp://192.168.100.1:554"></div>
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>logo_url</label><input id="ztLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateZteUrlPreview()"></div>
-          <div class="form-group" style="flex:0 0 140px;margin-bottom:0">
-            <label>回看天数</label>
+          <!-- 第一排：两个长地址(自适应拉伸) + 回看天数(固定) + 自动分组(固定) -->
+          <div class="form-group" style="flex:1 1 200px;margin-bottom:0">
+            <label>epg_server_url</label>
+            <input id="ztEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateZteUrlPreview()">
+          </div>
+          <div class="form-group" style="flex:1 1 200px;margin-bottom:0">
+            <label>logo_url</label>
+            <input id="ztLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateZteUrlPreview()">
+          </div>
+          <div class="form-group" style="flex:0 0 85px;margin-bottom:0">
+            <label style="white-space:nowrap;">回看天数</label>
             <select id="ztEpgDays">
               ${[1,2,3,4,5,6,7,8,9,10].map(function(n){
                 return '<option value="'+n+'"'+(Number(c.epg_days||8)===n?' selected':'')+'>'+n+' 天</option>';
               }).join('')}
             </select>
           </div>
-          <div class="form-group" style="flex:1 1 200px;margin-bottom:0;display:flex;align-items:flex-end;padding-bottom:8px">
-            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:13px;cursor:pointer;margin:0">
-              <input type="checkbox" id="ztEnableGroup" style="width:auto" ${c.enable_group ? 'checked' : ''}> 生成文件时自动分组
+          <div class="form-group" style="flex:0 0 130px;margin-bottom:0;display:flex;align-items:flex-end;padding-bottom:8px">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:13px;cursor:pointer;margin:0;white-space:nowrap;">
+              <input type="checkbox" id="ztEnableGroup" style="width:auto" ${c.enable_group ? 'checked' : ''}> 自动分组
             </label>
+          </div>
+
+          <!-- 第二排：三个短配置 -->
+          <div class="form-group" style="flex:1 1 120px;margin-bottom:0">
+            <label style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="自定义 EPG 文件名">epgname（自动补 .xml）</label>
+            <input id="ztEpgName" value="${escAttr(c.epgname || 'epg.xml')}" placeholder="epg.xml" oninput="updateZteUrlPreview()">
+          </div>
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0">
+            <label style="white-space:nowrap;">live_proxy（组播转单播）</label>
+            <input id="ztLiveProxy" value="${escAttr(c.live_proxy)}" placeholder="http://192.168.100.1:4022">
+          </div>
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0">
+            <label style="white-space:nowrap;">replay_proxy（回看地址）</label>
+            <input id="ztReplayProxy" value="${escAttr(c.replay_proxy)}" placeholder="rtsp://192.168.100.1:554">
           </div>
         </div>
         <div id="ztUrlPreview" style="font-size:12px;color:var(--text-secondary);line-height:1.9;background:#fafafa;border:1px dashed #ddd;border-radius:6px;padding:8px 12px;margin-bottom:12px"></div>

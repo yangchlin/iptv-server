@@ -189,9 +189,26 @@ def _load_auth() -> dict:
 
 
 def _ensure_auth_file():
-    """启动时确保 auth.json 存在（加盐格式）。已存在则不覆盖。"""
+    """启动时确保 auth.json 存在（加盐格式）。
+
+    缺失/空/损坏 → 重建为默认凭据；结构不完整时同样重建，避免默认密码被静默启用。
+    """
     path = _get_auth_file()
+    need_init = False
     if not path.exists() or path.stat().st_size == 0:
+        need_init = True
+    else:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not (isinstance(data, dict) and data.get("username") and data.get("password_hash")):
+                need_init = True
+                print("[认证] auth.json 结构不完整，将重建为默认凭据")
+        except (json.JSONDecodeError, OSError):
+            need_init = True
+            print("[认证] 警告：auth.json 已损坏，将重建为默认凭据（如不是预期，请检查磁盘）")
+
+    if need_init:
         _save_auth({
             "username": DEFAULT_USERNAME,
             "password_hash": _hash_password(DEFAULT_PASSWORD),
@@ -278,6 +295,13 @@ def _record_failure(ip: str) -> None:
     """记录一次登录失败。"""
     now = time.time()
     with _lock:
+        # ★ 新增：防止恶意扫描导致字典无限膨胀
+        if len(_fail_counts) > 10000:
+            # 找出所有超过时间窗口（5分钟）的记录并清理
+            expired = [k for k, v in _fail_counts.items() if now - v[1] > _FAIL_WINDOW]
+            for k in expired:
+                _fail_counts.pop(k, None)
+
         entry = _fail_counts.get(ip)
         if not entry or now - entry[1] > _FAIL_WINDOW:
             _fail_counts[ip] = [1, now]

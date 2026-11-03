@@ -165,6 +165,14 @@ def _is_public_path(path: str, method: str = "GET") -> bool:
         if path.startswith("/api/download/"):
             seg = path[len("/api/download/"):].split("/", 1)[0]
             return seg not in ("start", "history", "progress")
+        # 自定义 EPG 文件名：/iptv.xml、/iptv.xml.gz（仅放行当前配置的那个）
+        try:
+            epg_name = config.get_epg_filename()
+            bare = path.lstrip("/")
+            if bare == epg_name or bare == epg_name + ".gz":
+                return True
+        except Exception:
+            pass
     return False
 
 
@@ -260,7 +268,7 @@ async def api_status():
     channel_total = len(channels) + len(extracts)
     json_count = len(list(config.JSON_DIR.glob("*.json")))
     icon_count = len([f for f in config.ICONS_DIR.iterdir() if f.is_file()]) if config.ICONS_DIR.exists() else 0
-    xml_path = config.XML_DIR / "epg.xml"
+    xml_path = config.get_epg_path()
     xml_size = "0 KB"
     if xml_path.exists():
         size_kb = xml_path.stat().st_size / 1024
@@ -662,7 +670,7 @@ async def cleanup_epg_orphans():
 
 @app.get("/api/xml")
 async def get_xml():
-    xml_path = config.XML_DIR / "epg.xml"
+    xml_path = config.get_epg_path()
     if not xml_path.exists():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="application/xml")
@@ -678,13 +686,15 @@ async def get_xml_url(request: Request):
     scheme = request.headers.get("x-forwarded-proto", "http").split(",")[0].strip().lower()
     if scheme not in ("http", "https"):
         scheme = "http"
-    return {"url": f"{scheme}://{host}/api/xml/epg.xml"}
+    epg_name = config.get_epg_filename()
+    return {"url": f"{scheme}://{host}/{epg_name}"}
 
 
 @app.head("/api/xml/epg.xml", include_in_schema=False)
 @app.get("/api/xml/epg.xml")
 async def get_xml_file():
-    xml_path = config.XML_DIR / "epg.xml"
+    """兼容入口：永远返回当前配置的 EPG 文件。"""
+    xml_path = config.get_epg_path()
     if not xml_path.exists():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="application/xml")
@@ -695,7 +705,8 @@ async def get_xml_file():
 @app.head("/api/xml/epg.xml.gz", include_in_schema=False)
 @app.get("/api/xml/epg.xml.gz")
 async def get_xml_gz():
-    xml_path = config.XML_DIR / "epg.xml"
+    """兼容入口：永远返回当前配置的 EPG 文件的 gz 版本。"""
+    xml_path = config.get_epg_path()
     if not xml_path.exists():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="application/xml")
@@ -711,23 +722,28 @@ async def build_xml():
     """手动生成 XML（同步重活放线程池）。"""
     if download_progress._running:
         return {"success": False, "error": "下载任务正在进行中，请等待完成"}
-    active = config.get_active_platform()
-    result = await asyncio.to_thread(
-        xml_builder.build_xml,
-        log_callback=lambda msg: logger.log(msg),
-        platform=active,
-    )
-    # 平台专用 XML 一起刷新（没获取过该平台频道时内部会跳过，不影响主 XML）
-    telecom_xml = await asyncio.to_thread(
-        xml_builder.build_telecom_xml,
-        log_callback=lambda msg: logger.log(msg, category="电信EPG"),
-        platform=active,
-    )
-    result["telecom_xml"] = {
-        k: telecom_xml.get(k)
-        for k in ("success", "channel_count", "programme_count", "error")
-    }
-    return result
+    download_progress._running = True
+   # 借用互斥，挡住重复点击和定时任务并发
+    try:
+        active = config.get_active_platform()
+        result = await asyncio.to_thread(
+            xml_builder.build_xml,
+            log_callback=lambda msg: logger.log(msg),
+            platform=active,
+        )
+        # 平台专用 XML 一起刷新（没获取过该平台频道时内部会跳过，不影响主 XML）
+        telecom_xml = await asyncio.to_thread(
+            xml_builder.build_telecom_xml,
+            log_callback=lambda msg: logger.log(msg, category="电信EPG"),
+            platform=active,
+        )
+        result["telecom_xml"] = {
+            k: telecom_xml.get(k)
+            for k in ("success", "channel_count", "programme_count", "error")
+        }
+        return result
+    finally:
+        download_progress._running = False
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1465,18 +1481,6 @@ def _sync_epg_target_meta(target, name, source):
         target["source_type"] = "extract"
         changed = True
 
-    if str(target.get("source_type", "") or "") == "extract" and name:
-        if str(target.get("extract_name", "") or "") != name:
-            target["extract_name"] = name
-            changed = True
-    return changed
-
-    # 老数据没有 source_type 时标记为 extract，避免被「清理孤儿」误删
-    if not str(target.get("source_type", "") or ""):
-        target["source_type"] = "extract"
-        changed = True
-
-    # 目标本身是提取生成的独立频道时，同步 extract_name 便于来源列显示
     if str(target.get("source_type", "") or "") == "extract" and name:
         if str(target.get("extract_name", "") or "") != name:
             target["extract_name"] = name
@@ -2295,7 +2299,9 @@ async def download_m3u_url_api(data: dict = Body(...)):
             
         text = content.decode("utf-8", errors="replace").replace("\r\n", "\n")
         
-        filename = url.split("/")[-1] or f"m3u_{int(time.time())}.m3u"
+        from urllib.parse import urlparse, unquote
+        _parsed = urlparse(url)
+        filename = unquote(_parsed.path.split("/")[-1]) or f"m3u_{int(time.time())}.m3u"
         filename = _safe_basename(filename)
         if not filename.endswith((".m3u", ".m3u8", ".txt")):
             filename += ".m3u"
@@ -2829,8 +2835,8 @@ async def delete_icon(filename: str):
 @app.head("/epg.xml", include_in_schema=False)
 @app.get("/epg.xml")
 async def short_epg_xml():
-    """短路径：返回原始 XML（公开，供播放器直接引用）。"""
-    xml_path = config.XML_DIR / "epg.xml"
+    """短路径：返回当前配置的 EPG 原始 XML（公开，供播放器直接引用）。"""
+    xml_path = config.get_epg_path()
     if not xml_path.exists():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="application/xml")
@@ -2842,7 +2848,7 @@ async def short_epg_xml():
 @app.head("/epg.xml.gz", include_in_schema=False)
 @app.get("/epg.xml.gz")
 async def short_epg_gz():
-    xml_path = config.XML_DIR / "epg.xml"
+    xml_path = config.get_epg_path()
     if not xml_path.exists():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
                         media_type="text/xml")
@@ -2853,6 +2859,51 @@ async def short_epg_gz():
     return Response(content=buf.getvalue(), media_type="application/gzip", headers={
         "Cache-Control": "no-store",
     })
+
+
+
+
+# ════════════════════════════════════════════════════════════════
+# 自定义 EPG 文件名直链
+#
+# 用户在「认证与输出配置」把 epgname 改成 iptv.xml 后：
+#   http://<IP>/iptv.xml      → 返回生成好的 XML
+#   http://<IP>/iptv.xml.gz   → 返回 gzip 版本
+# 只匹配当前配置的文件名，防止路径穿越和其他 xml 被误匹配。
+# 注意：必须放在 short_epg_xml / short_epg_gz 之后，
+#       否则 /epg.xml 会被这个 catch-all 抢先匹配。
+# ════════════════════════════════════════════════════════════════
+
+@app.head("/{fname}.xml", include_in_schema=False)
+@app.get("/{fname}.xml")
+async def custom_epg_xml(fname: str):
+    epg_name = config.get_epg_filename()
+    if f"{fname}.xml" != epg_name:
+        raise HTTPException(404, "文件不存在")
+    xml_path = config.get_epg_path()
+    if not xml_path.exists():
+        return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
+                        media_type="application/xml")
+    return FileResponse(str(xml_path), media_type="application/xml",
+                        headers={"Cache-Control": "no-store"})
+
+
+@app.head("/{fname}.xml.gz", include_in_schema=False)
+@app.get("/{fname}.xml.gz")
+async def custom_epg_gz(fname: str):
+    epg_name = config.get_epg_filename()
+    if f"{fname}.xml" != epg_name:
+        raise HTTPException(404, "文件不存在")
+    xml_path = config.get_epg_path()
+    if not xml_path.exists():
+        return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>',
+                        media_type="application/xml")
+    xml_bytes = xml_path.read_bytes()
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode='wb', mtime=0) as gz:
+        gz.write(xml_bytes)
+    return Response(content=buf.getvalue(), media_type="application/gzip",
+                    headers={"Cache-Control": "no-store"})
 
 
 # ════════════════════════════════════════════════════════════════

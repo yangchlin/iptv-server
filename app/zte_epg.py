@@ -22,6 +22,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
+from .m3u_handler import _sanitize_field
 
 import requests
 
@@ -287,30 +288,36 @@ def _attr(block: str, attr: str) -> str:
 
 
 def _channel_blocks(text: str) -> List[str]:
-    """把页面切成「一个频道一块」。
-
-    优先识别 addChannel / CTCSetConfig 调用（属性串可能被拆成多个参数）；
-    没有包装函数时，按 ChannelID="..." 的位置切块。这样某个频道缺
-    TimeShiftURL / FCC 字段时不会把后面的频道整体错位。
-    """
+    """把页面切成「一个频道一块」，并用 ChannelID 严格去重。"""
     blocks: List[str] = []
-    for m in _CALL_QUOTED_RE.finditer(text or ""):
-        block = m.group(2) or ""
-        if "ChannelID=" in block:
-            blocks.append(block)
+    seen_ids = set()
 
-    # 裸属性写法（addChannel(ChannelID="...",...)）混用时补进来，避免漏台
+    def add_block(b):
+        # 提取 ChannelID 作为唯一标识去重
+        m = re.search(r'ChannelID\s*=\s*[\'"]([^\'"]+)[\'"]', b)
+        if m:
+            cid = m.group(1)
+            if cid not in seen_ids:
+                seen_ids.add(cid)
+                blocks.append(b)
+
+    # 1. 先匹配带引号的参数写法
+    for m in _CALL_QUOTED_RE.finditer(text or ""):
+        add_block(m.group(2) or "")
+
+    # 2. 再匹配裸属性写法混用的情况，重复的会被 add_block 拦截
     for m in _CALL_RAW_RE.finditer(text or ""):
-        block = m.group(1) or ""
-        if "ChannelID=" in block and block not in blocks:
-            blocks.append(block)
+        add_block(m.group(1) or "")
+
     if blocks:
         return blocks
 
+    # 3. 兜底：如果前面都没匹配到，按 ChannelID 的位置强行切块
     matches = list(_CHANNEL_ID_RE.finditer(text or ""))
     for i, m in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        blocks.append(text[m.start():end])
+        add_block(text[m.start():end])
+        
     return blocks
 
 
@@ -809,16 +816,22 @@ def zte_generate_m3u(channels: List[Dict], cfg: Dict[str, Any]) -> str:
             continue
         catchup = zte_catchup_url(ch, cfg)
 
-        tvg_logo = config.logo_link(logo_base, epg_base, name)
-        tvg_id = str(ch.get("tvg_id", "") or name).strip() or name
-        attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id}" tvg-name="{name}"'
+        tvg_logo = config.logo_link(logo_base, epg_server_url, name)
+        tvg_id_str = str(ch.get("tvg_id", "") or name).strip() or name
+        
+        # 转义防注入
+        safe_name = _sanitize_field(name)
+        safe_tvg_id = _sanitize_field(tvg_id_str)
+        safe_logo = _sanitize_field(tvg_logo)
+        
+        attrs = f'tvg-logo="{safe_logo}" tvg-id="{safe_tvg_id}" tvg-name="{safe_name}"'
         if enable_group:
             g = apply_group_rules(name, group_rules)
             if g:
                 attrs += f' group-title="{g}"'
         if catchup:
             attrs += f' catchup="default" catchup-source="{catchup}"'
-        lines.append(f'#EXTINF:-1 {attrs}, {name}')
+        lines.append(f'#EXTINF:-1 {attrs}, {safe_name}')
         lines.append(live)
         lines.append("")
     return "\n".join(lines)
@@ -859,21 +872,26 @@ def zte_generate_sctv_files(channels: List[Dict], cfg: Dict[str, Any]) -> Dict[s
                     g = apply_group_rules(name, group_rules)
                     group_str = f",{g}" if g else ""
 
+                safe_txt_name = name.replace(",", "，")
                 if catchup:
-                    ftxt.write(f"{name},{catchup}#{live}{group_str}\n")
+                    ftxt.write(f"{safe_txt_name},{catchup}#{live}{group_str}\n")
                 else:
-                    ftxt.write(f"{name},{live}{group_str}\n")
+                    ftxt.write(f"{safe_txt_name},{live}{group_str}\n")
 
                 tvg_logo = config.logo_link(logo_base, epg_base, name)
                 tvg_id = str(ch.get("tvg_id", "") or name).strip() or name
-                attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id}" tvg-name="{name}"'
+                
+                safe_name = _sanitize_field(name)
+                safe_id = _sanitize_field(tvg_id)
+                safe_logo = _sanitize_field(tvg_logo)
+                attrs = f'tvg-logo="{safe_logo}" tvg-id="{safe_id}" tvg-name="{safe_name}"'
                 if enable_group:
                     g = apply_group_rules(name, group_rules)
                     if g:
                         attrs += f' group-title="{g}"'
                 if catchup:
                     attrs += f' catchup="default" catchup-source="{catchup}"'
-                fm3u.write(f"#EXTINF:-1 {attrs}, {name}\n{live}\n")
+                fm3u.write(f"#EXTINF:-1 {attrs}, {safe_name}\n{live}\n")
                 count += 1
 
         # 平台专用 m3u（与 sctv.m3u 内容一致，便于区分两个平台）

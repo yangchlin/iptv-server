@@ -13,6 +13,7 @@ import json
 import os
 import re
 import time
+import uuid 
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -51,6 +52,15 @@ def _find_json_path(name: str, suffix: str, date_str: str) -> Path:
             return p
     return candidates[0]
 
+def _get_fallback_name(name: str) -> str:
+    """生成去除了清晰度后缀的备用频道名（用于4K/高清等回退查找）"""
+    suffixes = ("4K", "高清", "HD", "FHD", "UHD")
+    base = name
+    for sfx in suffixes:
+        if base.upper().endswith(sfx.upper()):
+            base = base[:-len(sfx)].rstrip(" -/").strip()
+            break
+    return base
 
 def _escape_xml(text: str) -> str:
     """XML 转义：特殊字符 + 剔除非法控制字符。"""
@@ -82,8 +92,10 @@ def build_xml(
         _start = time.time()
         active = config.normalize_platform(platform or config.get_active_platform())
         epg_suffix = config.platform_epg_suffix(active)
+        # ★ 主 EPG 文件名（用户可配置，默认 epg.xml）
+        epg_name = config.get_epg_filename()
         if log_callback:
-            log_callback(f"[XML] 开始生成 XML（平台: {config.platform_label(active)}）...")
+            log_callback(f"[XML] 开始生成 XML（平台: {config.platform_label(active)}，文件名: {epg_name}）...")
 
         epg_channels = config.get_epg_channels()
         extracts = config.get_epg_extracts()
@@ -139,12 +151,13 @@ def build_xml(
                 normal_path = _find_json_path(name, "", date_str)
                 json_path = telecom_path if telecom_path.exists() else normal_path
 
-                # ★ 新增：如果带 4K 的频道没拉到数据，自动去借用同名（去掉4K）普通频道的节目单
-                if not json_path.exists() and name.upper().endswith("4K"):
-                    fallback_name = name[:-2].strip()
-                    telecom_path = _find_json_path(fallback_name, epg_suffix, date_str)
-                    normal_path = _find_json_path(fallback_name, "", date_str)
-                    json_path = telecom_path if telecom_path.exists() else normal_path
+                # ★ 修复：如果带 4K/高清 的频道没拉到数据，自动去借用普通频道的节目单
+                if not json_path.exists():
+                    fallback_name = _get_fallback_name(name)
+                    if fallback_name and fallback_name != name:
+                        telecom_path = _find_json_path(fallback_name, epg_suffix, date_str)
+                        normal_path = _find_json_path(fallback_name, "", date_str)
+                        json_path = telecom_path if telecom_path.exists() else normal_path
 
                 if json_path.exists():
                     json_found += 1
@@ -196,11 +209,13 @@ def build_xml(
 
         lines.append('</tv>')
 
-        # 原子写入：普通 xml + gzip 各一份
+        # 原子写入：普通 xml + gzip 各一份（文件名由用户配置决定）
         xml_content = "\n".join(lines) + "\n"
-        xml_path = config.XML_DIR / "epg.xml"
-        tmp_xml = config.XML_DIR / "epg.xml.tmp"
-        tmp_gz = config.XML_DIR / "epg.xml.gz.tmp"
+        xml_path = config.XML_DIR / epg_name
+        gz_path = config.XML_DIR / f"{epg_name}.gz"
+        _tmp_id = uuid.uuid4().hex[:8]
+        tmp_xml = config.XML_DIR / f"{epg_name}.{_tmp_id}.tmp"
+        tmp_gz = config.XML_DIR / f"{epg_name}.gz.{_tmp_id}.tmp"
 
         with open(tmp_xml, "w", encoding="utf-8", newline="\n") as f:
             f.write(xml_content)
@@ -210,7 +225,7 @@ def build_xml(
         tmp_gz.write_bytes(gz_buf.getvalue())
 
         os.replace(str(tmp_xml), str(xml_path))
-        os.replace(str(tmp_gz), str(config.XML_DIR / "epg.xml.gz"))
+        os.replace(str(tmp_gz), str(gz_path))
 
         for tmp in (tmp_xml, tmp_gz):
             try:
@@ -219,23 +234,32 @@ def build_xml(
             except OSError:
                 pass
 
-        # 备份到 SHARE_DIR（同时保留普通 XML 和 GZ 压缩包）
+
+
+        # ★ 清理旧 EPG 文件名（改名后自动删旧的 epg.xml / iptv.xml 之类）
+        try:
+            removed = config.cleanup_old_epg_files()
+            if removed and log_callback:
+                log_callback(f"[XML] 已清理旧 EPG 文件: {', '.join(removed)}")
+        except Exception as e:
+            if log_callback:
+                log_callback(f"[XML] 清理旧文件失败（不影响生成）: {e}")
+
+        # 备份到 SHARE_DIR（同时保留普通 XML 和 GZ 压缩包，文件名跟随用户配置）
         try:
             config.SHARE_DIR.mkdir(parents=True, exist_ok=True)
-            
-            # 1. 备份未压缩的 epg.xml
-            share_path = config.SHARE_DIR / "epg.xml"
-            tmp_share = share_path.parent / "epg.xml.tmp"
+
+            share_path = config.SHARE_DIR / epg_name
+            tmp_share = config.SHARE_DIR / f"{epg_name}.tmp"
             with open(tmp_share, "w", encoding="utf-8", newline="\n") as f:
                 f.write(xml_content)
             os.replace(str(tmp_share), str(share_path))
-            
-            # 2. 备份压缩后的 epg.xml.gz（复用前面已经生成的 gz_buf）
-            share_gz_path = config.SHARE_DIR / "epg.xml.gz"
-            tmp_share_gz = share_gz_path.parent / "epg.xml.gz.tmp"
+
+            share_gz_path = config.SHARE_DIR / f"{epg_name}.gz"
+            tmp_share_gz = config.SHARE_DIR / f"{epg_name}.gz.tmp"
             tmp_share_gz.write_bytes(gz_buf.getvalue())
             os.replace(str(tmp_share_gz), str(share_gz_path))
-            
+
         except OSError:
             pass
 
@@ -246,7 +270,7 @@ def build_xml(
 
         elapsed = int(time.time() - _start)
         if log_callback:
-            log_callback(f"[XML] 生成完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒")
+            log_callback(f"[XML] 生成完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒 → {epg_name}")
         if progress_callback:
             progress_callback(f"[XML] 完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒")
 
@@ -318,10 +342,11 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
             for d in date_range:
                 date_str = d.strftime("%Y%m%d")
                 json_path = _find_json_path(name, epg_suffix, date_str)
-                # ★ 新增：如果带 4K 的频道没拉到数据，自动去借用同名（去掉4K）普通频道的节目单
-                if not json_path.exists() and name.upper().endswith("4K"):
-                    fallback_name = name[:-2].strip()
-                    json_path = _find_json_path(fallback_name, epg_suffix, date_str)
+                # ★ 修复：如果带 4K/高清 的频道没拉到数据，自动去借用普通频道的节目单
+                if not json_path.exists():
+                    fallback_name = _get_fallback_name(name)
+                    if fallback_name and fallback_name != name:
+                        json_path = _find_json_path(fallback_name, epg_suffix, date_str)
 
                 if not json_path.exists():
                     continue
@@ -359,8 +384,9 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
         xml_content = "\n".join(lines) + "\n"
 
         xml_path = config.XML_DIR / xml_name
-        tmp_xml = config.XML_DIR / (xml_name + ".tmp")
-        tmp_gz = config.XML_DIR / (xml_name + ".gz.tmp")
+        _tmp_id = uuid.uuid4().hex[:8]
+        tmp_xml = config.XML_DIR / f"{xml_name}.{_tmp_id}.tmp"
+        tmp_gz = config.XML_DIR / f"{xml_name}.gz.{_tmp_id}.tmp"
 
         with open(tmp_xml, "w", encoding="utf-8", newline="\n") as f:
             f.write(xml_content)
@@ -383,12 +409,11 @@ def build_telecom_xml(log_callback: Optional[Callable] = None,
         result["path"] = str(xml_path)
         result["channel_count"] = channel_count
         result["programme_count"] = programme_count
-        result["placeholder_count"] = placeholder_count
 
         if log_callback:
             log_callback(
                 f"[XML-{config.platform_label(active)}] 完成: {channel_count} 频道, "
-                f"{programme_count} 节目（其中占位 {placeholder_count}）→ {xml_path.name}"
+                f"{programme_count} 节目 → {xml_path.name}"
             )
         if progress_callback:
             progress_callback(

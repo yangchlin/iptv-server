@@ -367,8 +367,41 @@ window.telecomGetChannels = function(){
     window.updateTelecomUrlPreview();
   };
 
+
+  // ── epgname 输入实时校验（与后端 config.get_epg_filename() 完全一致）──
+  window.checkEpgNameInput = function(input, tipId){
+    var tip = document.getElementById(tipId);
+    if (!tip) return;
+    var raw = String(input.value || '').trim();
+    if (!raw) {
+      tip.innerHTML = '留空 = <code>epg.xml</code>';
+      tip.style.color = 'var(--text-secondary)';
+      return;
+    }
+    // 与后端清洗逻辑一致：去目录 → 去 .gz → 剔非法字符 → 补 .xml
+    var name = raw.replace(/\\/g, '/').split('/').pop();
+    if (name.toLowerCase().endsWith('.gz')) name = name.slice(0, -3);
+    name = name.replace(/[^A-Za-z0-9_.-]/g, '').replace(/^[.\s]+|[.\s]+$/g, '');
+    if (!name) {
+      tip.innerHTML = '⚠️ 清洗后为空，会回退到 <code>epg.xml</code>（只支持英文/数字/下划线/点/中划线）';
+      tip.style.color = 'var(--danger)';
+      return;
+    }
+    if (!name.toLowerCase().endsWith('.xml')) name += '.xml';
+    if (name.length > 80) name = name.slice(0, 80);
+    if (name !== raw) {
+      tip.innerHTML = '⚠️ 将保存为 <code>' + escAttr(name) + '</code>（非法字符已剔除）';
+      tip.style.color = 'var(--warning)';
+    } else {
+      tip.innerHTML = '✅ 将保存为 <code>' + escAttr(name) + '</code>';
+      tip.style.color = 'var(--success)';
+    }
+  };
+
+
   var _keyPollTimer = null;
   var _keySearching = false;
+  var _keyPollFails = 0;        // ← 新增
 
   window.telecomKeyStatus = function(text, color){
     var el = document.getElementById('mcFindKeyStatus');
@@ -399,6 +432,7 @@ window.telecomGetChannels = function(){
 
   window.startTelecomKeyPolling = function(){
     window.stopTelecomKeyPolling();
+    _keyPollFails = 0;
     _keyPollTimer = setInterval(function(){
       if (!document.getElementById('mcFindKeyBtn')) {
         window.stopTelecomKeyPolling();
@@ -408,6 +442,7 @@ window.telecomGetChannels = function(){
       fetch('/api/telecom/find-key/status', {credentials:'include'})
         .then(function(r){ return r.json() })
         .then(function(s){
+		  _keyPollFails = 0;
           if (s.running){
             _keySearching = true;
             var b = document.getElementById('mcFindKeyBtn');
@@ -432,7 +467,15 @@ window.telecomGetChannels = function(){
             window.telecomKeyStatus(s.message || '反推结束，没有找到 key', isStopped ? '#faad14' : '#ff4d4f');
           }
         })
-        .catch(function(){});
+        .catch(function(){
+          _keyPollFails++;
+          if (_keyPollFails >= 3) {
+            window.stopTelecomKeyPolling();
+            _keySearching = false;
+            setKeyBtn('🔍 反推', false);
+            window.telecomKeyStatus('网络中断，已停止轮询（可重新点「🔍 反推」）', '#ff4d4f');
+          }
+        });
     }, 2000);
   };
 
@@ -559,12 +602,42 @@ window.telecomGetChannels = function(){
           <span style="font-size:11px;color:var(--text-secondary)">留空也行：生成 m3u/txt 时会自动补</span>
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:12px;margin-bottom:12px">
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>epg_server_url</label><input id="mcEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateTelecomUrlPreview()"></div>
-          <div class="form-group" style="flex:1 1 120px;margin-bottom:0"><label style="cursor:help;" title="系统固定为 epg.xml，不可修改">epgname (🔒只读)</label><input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" readonly style="background:#f5f5f5;color:#888;cursor:not-allowed;" title="系统固定为 epg.xml，不可修改"></div>
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>RTP2HTTPD（手工填）</label><input id="mcRtp" value="${escAttr(c.RTP2HTTPD)}" placeholder="http://192.168.1.1:5140"></div>
-          <div class="form-group" style="flex:2 1 200px;margin-bottom:0"><label>logo_url</label><input id="mcLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateTelecomUrlPreview()"></div>
-        </div>
+          <!-- 第一排：两个长链接 + 回看天数 -->
+          <div class="form-group" style="flex:1 1 40%;margin-bottom:0">
+            <label>epg_server_url</label>
+            <input id="mcEpgUrl" value="${escAttr(epgServer)}" placeholder="http://你的域名或IP" oninput="updateTelecomUrlPreview()">
+          </div>
+          <div class="form-group" style="flex:1 1 40%;margin-bottom:0">
+            <label>logo_url</label>
+            <input id="mcLogo" value="${escAttr(logoBase)}" placeholder="留空＝当前访问地址" oninput="updateTelecomUrlPreview()">
+          </div>
+          <div class="form-group" style="flex:0 0 90px;margin-bottom:0">
+            <label style="white-space:nowrap;">回看天数</label>
+            <select id="mcEpgDays">
+              ${[1,2,3,4,5,6,7,8,9,10].map(function(n){
+                return '<option value="'+n+'"'+(Number(c.epg_days||7)===n?' selected':'')+'>'+n+' 天</option>';
+              }).join('')}
+            </select>
+          </div>
 
+          <!-- 第二排：短配置与开关 -->
+          <div class="form-group" style="flex:1 1 130px;margin-bottom:0">
+            <label style="cursor:help;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="自定义 EPG 文件名（如 iptv.xml）。只支持英文/数字/下划线/点/中划线">epgname（只填文件名）</label>
+            <input id="mcEpgName" value="${escAttr(c.epgname || 'epg.xml')}" placeholder="epg.xml" oninput="updateTelecomUrlPreview();checkEpgNameInput(this,'mcEpgNameTip')">
+            <div id="mcEpgNameTip" style="font-size:11px;color:var(--text-secondary);margin-top:4px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+          </div>
+          
+          <div class="form-group" style="flex:2 1 200px;margin-bottom:0">
+            <label style="white-space:nowrap;">RTP2HTTPD（手工填）</label>
+            <input id="mcRtp" value="${escAttr(c.RTP2HTTPD)}" placeholder="http://192.168.1.1:5140">
+          </div>
+          
+          <div class="form-group" style="flex:1 1 150px;margin-bottom:0;display:flex;align-items:flex-end;padding-bottom:8px">
+            <label style="display:inline-flex;align-items:center;gap:6px;font-weight:normal;font-size:13px;cursor:pointer;margin:0;white-space:nowrap;" title="勾选后，生成的 m3u 和 txt 文件中会自动带上 group-title">
+              <input type="checkbox" id="mcEnableGroup" style="width:auto" ${c.enable_group ? 'checked' : ''}> 生成文件时自动分组
+            </label>
+          </div>
+        </div>
         <div id="mcUrlPreview" style="font-size:12px;color:var(--text-secondary);line-height:1.9;background:#fafafa;border:1px dashed #ddd;border-radius:6px;padding:8px 12px;margin-bottom:12px"></div>
         
         <div style="font-size:12px;color:var(--text-secondary);line-height:1.7;border-top:1px dashed #ddd;padding-top:8px">
@@ -619,7 +692,9 @@ window.telecomGetChannels = function(){
         epgname: getV('mcEpgName') || 'epg.xml',
         RTP2HTTPD: getV('mcRtp'),
         r2h_token: getV('mcR2hToken'),
-        logo_url: getV('mcLogo') || base
+        logo_url: getV('mcLogo') || base,
+        epg_days: parseInt(getV('mcEpgDays'), 10) || 7,
+        enable_group: !!(document.getElementById('mcEnableGroup') || {}).checked
     }};
     tcReq('POST', 'config', body).then(function(j){
         if (j.success) { alert('保存成功！'); forceCloseModal(); }
@@ -705,7 +780,7 @@ function tcFetchLogs(){
   window.telecomAuth = function(){ tcLog('认证中...'); tcReq('POST','auth',{}).then(j=>tcLog('结果: ' + JSON.stringify(j))).catch(e=>tcLog('失败: ' + e.message)); };
   window.telecomAllEpg = function(){
     tcLog('启动 EPG 下载...');
-    tcReq('POST','download-all-epg',{ force_refresh_channels: false, days: 7 })
+    tcReq('POST','download-all-epg',{ force_refresh_channels: false })
       .then(function(j){
         if (j && j.success) {
           tcLog('✅ 已启动，实时日志如下');
@@ -721,7 +796,7 @@ function tcFetchLogs(){
   };
   window.telecomRunAll = function(){
     tcLog('启动 一键获取频道+EPG...');
-    tcReq('POST','download-all-epg',{ force_refresh_channels: true, days: 7 })
+    tcReq('POST','download-all-epg',{ force_refresh_channels: true })
       .then(function(j){
         if (j && j.success) {
           tcLog('✅ 已启动，实时日志如下');
@@ -809,8 +884,25 @@ function tcFetchLogs(){
       auto_fetch_channels: !!(document.getElementById('tcAutoFetchChannels') || {}).checked
     };
     tcReq('POST', 'config', body).then(function(j){
-      if (j && j.success) { tcLog('✅ 定时设置已保存'); window.loadTelecomSchedule(); }
-      else { tcLog('❌ 保存失败: ' + ((j && j.message) || '')); }
+      if (j && j.success) { 
+          tcLog('✅ 定时设置已保存'); 
+          // ★ 新增：检查是否有格式不合法的警告
+          if (j.warnings && j.warnings.length > 0) {
+              var warnMsg = '部分设置格式有误，未生效：\n' + j.warnings.join('\n');
+              if (typeof showToast === 'function') {
+                  showToast(warnMsg, 'error', 5000);
+              } else {
+                  alert(warnMsg);
+              }
+          } else {
+              if (typeof showToast === 'function') showToast('定时设置已保存', 'success');
+          }
+          window.loadTelecomSchedule(); 
+      }
+      else { 
+          tcLog('❌ 保存失败: ' + ((j && j.message) || '')); 
+          if (typeof showToast === 'function') showToast('保存失败', 'error');
+      }
     }).catch(function(e){ tcLog('❌ 保存失败: ' + e.message); });
   };
 

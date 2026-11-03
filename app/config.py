@@ -123,6 +123,7 @@ DEFAULT_SETTINGS = {
         "epgname": "epg.xml",
         "logo_url": "",
         "merge_output_files": True,
+        "epg_days": 7,
     },
     # ── 中兴平台（四川部分地市使用）──
     # 与华为完全独立的配置段：切换平台不会覆盖、也不会混用另一边的数据。
@@ -759,6 +760,89 @@ def logo_link(logo_base: str, epg_base: str, channel_name: str) -> str:
     fname = quote(str(channel_name or "") + ".png", safe="")
     same_site = (not logo_base) or (logo_base.rstrip("/") == (epg_base or "").rstrip("/"))
     return f"{base}/api/download/{fname}" if same_site else f"{base}/logo/{fname}"
+
+
+
+# ════════════════════════════════════════════════════════════════
+# 主 EPG 文件名（用户可配置）
+# ════════════════════════════════════════════════════════════════
+
+# 只允许字母/数字/下划线/点/中划线，其余字符会被剔除
+_EPG_NAME_SAFE = _re.compile(r'[^A-Za-z0-9_.-]')
+
+
+def get_epg_filename() -> str:
+    """主 EPG XML 的文件名（用户可配置，默认 epg.xml）。
+
+    规则：
+      - 只保留字母/数字/下划线/点/中划线
+      - 自动去掉 .gz 后缀（.gz 由生成逻辑追加）
+      - 自动补 .xml 后缀
+      - 空值或全非法 → epg.xml
+      - 防路径穿越：../etc/passwd → etcpasswd.xml
+    """
+    try:
+        settings = get_settings()
+        telecom = settings.get("telecom") or {}
+        raw = str(telecom.get("epgname", "") or "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        return "epg.xml"
+    raw = raw.replace("\\", "/").rsplit("/", 1)[-1]
+    if raw.lower().endswith(".gz"):
+        raw = raw[:-3]
+    safe = _EPG_NAME_SAFE.sub("", raw).strip(". ")
+    if not safe:
+        return "epg.xml"
+    if not safe.lower().endswith(".xml"):
+        safe += ".xml"
+    return safe[:80]
+
+
+def get_epg_path() -> Path:
+    """主 EPG XML 的完整路径。"""
+    return XML_DIR / get_epg_filename()
+
+
+
+
+# ════════════════════════════════════════════════════════════════
+# 旧 EPG 文件清理（改名后自动删旧的）
+# ════════════════════════════════════════════════════════════════
+
+# 这些是平台专用 XML，任何情况下都不删
+_EPG_XML_KEEP_EXTRA = {
+    "epg_telecom.xml", "epg_telecom.xml.gz",
+    "epg_zte.xml", "epg_zte.xml.gz",
+}
+
+
+def cleanup_old_epg_files(keep_names=None) -> list:
+    """删除 XML_DIR 下非当前配置的 EPG 文件（含 .gz）。
+
+    保留：
+      - 当前配置的 epg_name 和 epg_name + ".gz"
+      - 平台专用 XML：epg_telecom.xml(.gz) / epg_zte.xml(.gz)
+      - 所有 *.tmp
+
+    返回被删除的文件名列表。
+    """
+    if keep_names is None:
+        epg_name = get_epg_filename()
+        keep_names = {epg_name, epg_name + ".gz"} | _EPG_XML_KEEP_EXTRA
+
+    removed = []
+    for pattern in ("*.xml", "*.xml.gz"):
+        for f in XML_DIR.glob(pattern):
+            if f.name in keep_names or f.name.endswith(".tmp"):
+                continue
+            try:
+                f.unlink()
+                removed.append(f.name)
+            except OSError:
+                pass
+    return removed
 
 
 # 模块加载时执行一次（首次启动/升级后自动生成）

@@ -15,6 +15,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List
 from urllib.parse import urlparse, quote
+from .m3u_handler import _sanitize_field
 
 import requests
 
@@ -545,7 +546,13 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
 
         tvg_logo = config.logo_link(logo_base, epg_server_url, name)
         tvg_id_str = str(ch.get("tvg_id", "") or name).strip() or name
-        attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id_str}" tvg-name="{name}"'
+        
+        # 转义防注入
+        safe_name = _sanitize_field(name)
+        safe_tvg_id = _sanitize_field(tvg_id_str)
+        safe_logo = _sanitize_field(tvg_logo)
+        
+        attrs = f'tvg-logo="{safe_logo}" tvg-id="{safe_tvg_id}" tvg-name="{safe_name}"'
 
         # ★ 新增：插入分组
         if enable_group:
@@ -556,7 +563,7 @@ def telecom_generate_m3u(channels: List[Dict], config_data: Dict[str, Any]) -> s
         if rtsp_url:
             attrs += f' catchup="default" catchup-source="{rtsp_url}"'
             
-        lines.append(f'#EXTINF:-1 {attrs}, {name}')
+        lines.append(f'#EXTINF:-1 {attrs}, {safe_name}')
         lines.append(f"{play_url}")
         lines.append("")
 
@@ -685,15 +692,20 @@ def generate_sctv_files(channels, config_data):
                     group_str = f",{g}" if g else ""
 
                 # 写入 TXT
+                safe_txt_name = name.replace(",", "，")
                 if rtsp_url:
-                    ftxt.write(f"{name},{rtsp_url}#{url}{group_str}\n")
+                    ftxt.write(f"{safe_txt_name},{rtsp_url}#{url}{group_str}\n")
                 else:
-                    ftxt.write(f"{name},{url}{group_str}\n")
+                    ftxt.write(f"{safe_txt_name},{url}{group_str}\n")
 
                 # 写入 M3U
                 tvg_logo = config.logo_link(logo_url, epg_server_url, name)
                 tvg_id_str = ch.get("tvg_id", name) or name
-                attrs = f'tvg-logo="{tvg_logo}" tvg-id="{tvg_id_str}" tvg-name="{name}"'
+                
+                safe_name = _sanitize_field(name)
+                safe_id = _sanitize_field(tvg_id_str)
+                safe_logo = _sanitize_field(tvg_logo)
+                attrs = f'tvg-logo="{safe_logo}" tvg-id="{safe_id}" tvg-name="{safe_name}"'
                 
                 if enable_group:
                     g = _apply_group_rules(name, group_rules)
@@ -702,7 +714,7 @@ def generate_sctv_files(channels, config_data):
 
                 if rtsp_url:
                     attrs += f' catchup="default" catchup-source="{rtsp_url}"'
-                fm3u.write(f"#EXTINF:-1 {attrs}, {name}\n{url}\n")
+                fm3u.write(f"#EXTINF:-1 {attrs}, {safe_name}\n{url}\n")
                 count += 1
 
         result.update({

@@ -219,8 +219,6 @@ class RtspProxy:
                     self._connections.remove(client)
 
     # ── 握手阶段 ──
-    # ── 握手阶段 ──
-    # ── 握手阶段 ──
     def _handshake(self, client: socket.socket, upstream: socket.socket,
                    addr) -> Optional[socket.socket]:
         location = ""
@@ -233,128 +231,79 @@ class RtspProxy:
             req = _recv_message(client)
             if not req:
                 return upstream
-            
             method = req.split(b" ", 1)[0].strip().upper()
             client_host, client_port = _url_host_port(req, default_port=client_port)
 
-            if location:
-                # 第二次及之后的请求，发给边缘节点
-                req_text = req.decode("utf-8", "replace")
-                req_url = req_text.split("\r\n")[0].split(" ")[1]
-                
-                # 提取 playseek 并替换
-                m = re.search(r'playseek=(\d{14})-(\d{14})', req_url)
-                if m:
-                    start, end = m.group(1), m.group(2)
-                    req_url = req_url.replace(m.group(0), f"programbegin={start}+08&programend={end}+08")
-                
-                # 使用 location 的 base 路径
-                loc_base = location.split("?")[0]
-                loc_query = location.split("?", 1)[1] if "?" in location else ""
-                
-                # 合并 location 的 query 和 原始请求的 query
-                req_query = req_url.split("?", 1)[1] if "?" in req_url else ""
-                merged_query = "&".join(filter(None, [loc_query, req_query]))
-                
-                new_url = f"{loc_base}?{merged_query}"
-                req = _set_request_url(req, new_url)
-                req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
-            else:
-                req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
-                req = _translate_request(req)
+            # ★ 核心修复：只替换 Host 为边缘节点，不能直接用 Location 覆盖整个 URL，
+            # 否则 AuthInfo、programbegin 等参数会丢失，导致服务器播十几秒后掐断流！
+            req = _rewrite_host(req, f"rtsp://{target_host}:{target_port}")
+            req = _translate_request(req)
 
             resp = _exchange(upstream, req)
             if not resp:
                 self.log("服务器无响应，关闭连接")
                 return upstream
 
-            # ★ 处理 302 重定向，保存 location 并立刻重连
-            if not location and resp.startswith(b"RTSP/1.0 302"):
-                location = _get_location(resp)
-                th, tp = _url_host_port_from_text(location)
-                if th and (not bad_server or th != bad_server):
-                    self.log(f"收到 302 重定向，改连边缘节点 {th}:{tp}")
-                    target_host, target_port = th, tp
-                    try:
-                        upstream.close()
-                        upstream = socket.create_connection((target_host, target_port), timeout=10)
-                        
-                        # 立即把当前的请求（带上所有原始参数）发给边缘节点
-                        req_text = req.decode("utf-8", "replace")
-                        req_url = req_text.split("\r\n")[0].split(" ")[1]
-                        m = re.search(r'playseek=(\d{14})-(\d{14})', req_url)
-                        if m:
-                            start, end = m.group(1), m.group(2)
-                            req_url = req_url.replace(m.group(0), f"programbegin={start}+08&programend={end}+08")
-                        
-                        loc_base = location.split("?")[0]
-                        loc_query = location.split("?", 1)[1] if "?" in location else ""
-                        req_query = req_url.split("?", 1)[1] if "?" in req_url else ""
-                        merged_query = "&".join(filter(None, [loc_query, req_query]))
-                        
-                        new_url = f"{loc_base}?{merged_query}"
-                        new_req = _set_request_url(req, new_url)
-                        new_req = _rewrite_host(new_req, f"rtsp://{target_host}:{target_port}")
-                        
-                        resp = _exchange(upstream, new_req)
-                        if not resp:
-                            self.log("边缘节点无响应")
-                            return upstream
-                    except OSError as e:
-                        self.log(f"连接边缘节点失败: {e}")
-                        return upstream
+            if round_no == 1 and b"session:" not in resp.lower():
+                new = self._follow_redirect(upstream, req, bad_server)
+                if new:
+                    upstream, resp, target_host, target_port, location = new
+                    self.log(f"已改连边缘节点 {target_host}:{target_port}")
 
             to_client = _rewrite_response(resp, client_host, client_port)
             client.sendall(to_client)
 
-            if method == b"PLAY" and resp.startswith(b"RTSP/1.0 200"):
+            # PLAY 之后服务器会开始发 RTP 交织数据，必须立刻转入原样转发；
+            # 之前的 OPTIONS / DESCRIBE / SETUP（多音轨可能有多个）继续按规则改写。
+            if method == b"PLAY":
                 break
 
+        # 握手完成：原样双向转发（含 RTP 交织数据）
         self.log("握手完成，开始转发流数据")
         _relay(client, upstream, self)
         return upstream
 
-#    def _follow_redirect(self, upstream: socket.socket, first_req: bytes,
-#                         bad_server: str):
-#        """首次响应不含 Session 时，主动发 DESCRIBE 拿重定向地址并连过去。"""
-#        describe = _to_describe(first_req)
-#        resp = _exchange(upstream, describe)
-#        if not resp:
-#            return None
-#        location = _get_location(resp)
-#        target_host, target_port = _url_host_port_from_text(location or resp.decode("utf-8", "replace"))
-#        if not target_host:
-#            self.log("响应里没有可用的重定向地址，继续使用原服务器")
-#            return None
-#        if bad_server and target_host == bad_server:
-#            self.log(f"重定向目标 {target_host} 在黑名单里，放弃")
-#            return None
-#        try:
-#            new_sock = socket.create_connection((target_host, target_port), timeout=10)
-#        except OSError as e:
-#            self.log(f"连接边缘节点失败: {e}")
-#            return None
-#        options_req = (
-#            f"OPTIONS {location} RTSP/1.0\r\n"
-#            f"CSeq: 1\r\n"
-#            f"User-Agent: {DEFAULT_UA}\r\n\r\n"
-#        ).encode("utf-8")
-#        try:
-#            new_resp = _exchange(new_sock, options_req)
-#        except OSError as e:
-#            self.log(f"边缘节点请求失败: {e}")
-#            new_resp = b""
-#        if not new_resp:
-#            try:
-#                new_sock.close()
-#            except OSError:
-#                pass
-#            return None
-#        try:
-#            upstream.close()
-#        except OSError:
-#            pass
-#        return new_sock, new_resp, target_host, target_port, location
+    def _follow_redirect(self, upstream: socket.socket, first_req: bytes,
+                         bad_server: str):
+        """首次响应不含 Session 时，主动发 DESCRIBE 拿重定向地址并连过去。"""
+        describe = _to_describe(first_req)
+        resp = _exchange(upstream, describe)
+        if not resp:
+            return None
+        location = _get_location(resp)
+        target_host, target_port = _url_host_port_from_text(location or resp.decode("utf-8", "replace"))
+        if not target_host:
+            self.log("响应里没有可用的重定向地址，继续使用原服务器")
+            return None
+        if bad_server and target_host == bad_server:
+            self.log(f"重定向目标 {target_host} 在黑名单里，放弃")
+            return None
+        try:
+            new_sock = socket.create_connection((target_host, target_port), timeout=10)
+        except OSError as e:
+            self.log(f"连接边缘节点失败: {e}")
+            return None
+        options_req = (
+            f"OPTIONS {location} RTSP/1.0\r\n"
+            f"CSeq: 1\r\n"
+            f"User-Agent: {DEFAULT_UA}\r\n\r\n"
+        ).encode("utf-8")
+        try:
+            new_resp = _exchange(new_sock, options_req)
+        except OSError as e:
+            self.log(f"边缘节点请求失败: {e}")
+            new_resp = b""
+        if not new_resp:
+            try:
+                new_sock.close()
+            except OSError:
+                pass
+            return None
+        try:
+            upstream.close()
+        except OSError:
+            pass
+        return new_sock, new_resp, target_host, target_port, location
 
 
 # ════════════════════════════════════════════════════════════════

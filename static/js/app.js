@@ -457,8 +457,11 @@ async function loadXmlLink(){
   const sR=await fetch('/api/settings');const sD=await sR.json()
   if(sD.xml_gz_enabled!==undefined) $('xmlGzToggle').checked=sD.xml_gz_enabled
   const r=await fetch('/api/xml/url');const d=await r.json()
-  const base=d.url.replace('/epg.xml','')
-  $('xmlLink').value=base+($('xmlGzToggle').checked?'/epg.xml.gz':'/epg.xml')
+  // /api/xml/url 现在返回 http://<IP>:<PORT>/<epgname>（跟随自定义文件名）
+  // 只需要按开关决定是否加 .gz，不再硬编码 /epg.xml
+  let url = d.url
+  if ($('xmlGzToggle').checked) url += '.gz'
+  $('xmlLink').value = url
  }catch(e){$('xmlLink').value='无法获取'}
 }
 
@@ -466,8 +469,10 @@ function toggleXmlGz(){
  const checked=$('xmlGzToggle').checked
  fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({xml_gz_enabled:checked})})
  const r=$('xmlLink')
- const base=r.value.replace(/\/epg\.xml(\.gz)?$/,'')
- r.value=base+(checked?'/epg.xml.gz':'/epg.xml')
+ // 先去掉可能已有的 .gz，再按开关决定是否加回；不依赖具体文件名
+ let v = String(r.value||'').replace(/\.gz$/,'')
+ if (checked) v += '.gz'
+ r.value = v
 }
 
 loadXmlLink()
@@ -538,40 +543,61 @@ function clearGlobalProgress(){
 window.clearGlobalProgress = clearGlobalProgress
 
 async function pollGlobalProgress(){
- try{
-  const r=await fetch('/api/download/progress');const d=await r.json()
-  const running=d.running
-  const msgs=d.messages||[]
-  if(running&&msgs.length){
-   const last=msgs[msgs.length-1]
-   const pct=Math.min(100,Math.round((d.current.current||0)/Math.max(1,d.current.total||1)*100))
-   $('gpFill').style.width=pct+'%'
-   $('gpPct').textContent=pct+'%'
-   const title=last.replace(/^\[[^\]]+\]\s*/,'')
-   $('gpTitle').textContent=title
-  }else if(running){
-   clearGlobalProgress()
-  }else{
-   $('gpFill').style.width='0%'
-   $('gpPct').textContent=''
-   let line=''
-   try{
-    const lr=await fetch('/api/logs/global?limit=1');const ld=await lr.json()
-    const entries=ld.entries||[]
-    if(entries.length){
-     line=entries[0].line||('['+entries[0].timestamp+'] '+entries[0].message)
+let progressTimer = null;
+let isPollingProgress = false;
+
+async function pollGlobalProgress() {
+  if (isPollingProgress) return;
+  isPollingProgress = true;
+  let nextInterval = 1000; // 默认有任务时 1 秒轮询
+  
+  try {
+    const r = await fetch('/api/download/progress');
+    const d = await r.json();
+    const running = d.running;
+    const msgs = d.messages || [];
+    
+    if (running && msgs.length) {
+      const last = msgs[msgs.length - 1];
+      const pct = Math.min(100, Math.round((d.current.current || 0) / Math.max(1, d.current.total || 1) * 100));
+      $('gpFill').style.width = pct + '%';
+      $('gpPct').textContent = pct + '%';
+      const title = last.replace(/^\[[^\]]+\]\s*/, '');
+      $('gpTitle').textContent = title;
+    } else if (running) {
+      clearGlobalProgress();
+    } else {
+      nextInterval = 15000; // ★ 修改这里：空闲时降低频率到 15 秒
+      $('gpFill').style.width = '0%';
+      $('gpPct').textContent = '';
+      let line = '';
+      try {
+        const lr = await fetch('/api/logs/global?limit=1');
+        const ld = await lr.json();
+        const entries = ld.entries || [];
+        if (entries.length) {
+          line = entries[0].line || ('[' + entries[0].timestamp + '] ' + entries[0].message);
+        }
+      } catch(e) {}
+      if (line && line.indexOf('[电信]') === -1) {
+        $('gpTitle').textContent = line.replace(/\n/g, ' ').substring(0, 120);
+      } else {
+        $('gpTitle').textContent = '就绪';
+      }
     }
-   }catch(e){}
-   if(line && line.indexOf('[电信]')===-1){
-    $('gpTitle').textContent=line.replace(/\n/g,' ').substring(0,120)
-   }else{
-    $('gpTitle').textContent='就绪'
-   }
+  } catch(e) {
+    nextInterval = 10000; // ★ 修改这里：请求出错时也降频到 15 秒
+  } finally {
+    isPollingProgress = false;
+    clearTimeout(progressTimer);
+    progressTimer = setTimeout(pollGlobalProgress, nextInterval);
   }
- }catch(e){}
 }
 
-setInterval(pollGlobalProgress,1000)
+// 启动循环
+progressTimer = setTimeout(pollGlobalProgress, 1500);
+}
+
 
 async function buildXml(){
  if(downloading){showToast('已有任务在运行','error');return}
@@ -629,6 +655,23 @@ function renderEpgSources(){
  if(!total){tbody.innerHTML='<tr><td colspan="8" class="empty">暂无 EPG 源 —— 点「➕ 添加源」，或直接编辑 <code>data/config/app_config.json</code> 里的 <code>epg_sources</code></td></tr>';$('epgSourcePagination').innerHTML='';return}
  tbody.innerHTML=page.map((s,i)=>{
   const realIdx=start+i
+    const failure = (typeof _epgFailures !== 'undefined') ? _epgFailures.find(f => f.url === s.url) : null
+  let statusHtml = ''
+  let titleHtml = ''
+  
+  if (s.parked) {
+      statusHtml = '<span class="badge badge-danger">已挂起</span>'
+  } else if (s.downloaded) {
+      statusHtml = '<span class="badge badge-success">已下载</span>'
+  } else {
+      if (failure) {
+          statusHtml = '<span class="badge badge-danger" style="cursor:help">未下载 ❌</span>'
+          titleHtml = `title="原因: ${escapeHtml(failure.error)}"`
+      } else {
+          statusHtml = '<span class="badge badge-danger">未下载</span>'
+      }
+  }
+
   return `<tr draggable="true"
     ondragstart="epgSrcDragStart(event,${realIdx})"
     ondrop="epgSrcDrop(event,${realIdx})"
@@ -660,7 +703,7 @@ function renderEpgSources(){
    
    <!-- 操作列 -->
    <td style="text-align:center;">
-   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})" title="下载该源（下载后自动合并，状态会变为已下载）">⬇️</button>
+   <button class="btn btn-sm" onclick="downloadSingleEpgSource(${realIdx})" title="下载该源（不会自动合并，下载完请手动点「📄 生成XML」或「🌐 外部EPG提取」）">⬇️</button>
    <button class="btn btn-sm" onclick="editEpgSource(${realIdx})">✏️</button>
    <button class="btn btn-sm btn-danger" onclick="deleteEpgSource(${realIdx})">✕</button>
    </td>
@@ -796,9 +839,22 @@ async function downloadSingleEpgSource(i){
     const r = await fetch('/api/epg/sources/'+i+'/download', {method:'POST'})
     const d = await r.json()
     if(d.success){
-      showToast('该源下载已启动','success')
+      showToast('该源下载已启动（完成后请手动「📄 生成XML」）','success')
       downloading = true
       startDownloadMonitor()
+    // 下载完成后自动刷新源列表状态
+      const t = setInterval(async () => {
+        try {
+          const pr = await fetch('/api/download/progress')
+          const pd = await pr.json()
+          if(!pd.running){
+            clearInterval(t)
+            downloading = false
+            await loadEpgSources()
+            showToast('该源下载完成，状态已刷新','success')
+          }
+        } catch(_) { clearInterval(t) }
+      }, 1500)
     } else {
       showToast(d.error || d.message || '启动失败','error')
     }
@@ -2114,12 +2170,21 @@ function m3uMatchEntry(entry, options, iconFiles) {
   }
 
   if (epgMatch) {
-    entry.tvg_id = epgMatch.tvg_id;
-    entry.tvg_name = epgMatch.tvg_name;
-    entry._epg_matched = true; // 打上自动匹配标记
+    // 如果原 tvg-id 为空或者为 9999，才自动替换
+    if (!entry.tvg_id || entry.tvg_id === '9999') {
+      entry.tvg_id = epgMatch.tvg_id;
+    }
+    // 如果原 tvg-name 为空，或者跟原来的显示名称一模一样，才自动替换（保护你手动修改过的名字）
+    if (!entry.tvg_name || entry.tvg_name === display) {
+      entry.tvg_name = epgMatch.tvg_name;
+    }
+    entry._epg_matched = true;
     matchedEpg = true;
   } else {
-    entry.tvg_name = display;
+    // 没匹配到节目单时，只有原 tvg-name 为空才用频道名填充
+    if (!entry.tvg_name) {
+      entry.tvg_name = display;
+    }
     entry._epg_matched = false;
   }
 
@@ -2132,7 +2197,8 @@ function m3uMatchEntry(entry, options, iconFiles) {
 
     for (const f of iconFiles) {
       // 去掉后缀 .png/.jpg 等
-      const fileNameWithoutExt = f.name.substring(0, f.name.lastIndexOf('.'));
+      const dotIdx = f.name.lastIndexOf('.');
+	  const fileNameWithoutExt = dotIdx > 0 ? f.name.substring(0, dotIdx) : f.name;
       const cleanFileName = fileNameWithoutExt.replace(/[\s\-（）()\[\]]/g,'').replace(/(高清|超清|HD|FHD|UHD|4K)/gi, '').toLowerCase();
       
       if (cleanFileName === cleanSearchName || fileNameWithoutExt.toLowerCase() === searchName.toLowerCase()) {
@@ -2179,7 +2245,7 @@ function _applyGroupRuleForFrontend(name, groupRules) {
 
 function m3uMatchAllEntries(){
  if(!_m3uOptions||!currentM3uEntries) return
- currentM3uEntries.forEach(e=>m3uMatchEntry(e,_m3uOptions))
+ currentM3uEntries.forEach(e=>m3uMatchEntry(e,_m3uOptions, _m3uIconFiles))
 }
 
 async function refreshM3uOptions(){
@@ -2335,6 +2401,18 @@ function renderM3uTable(entries, opts){
  applyTableColWidths($('m3uEditTable'))
 }
 
+function m3uSyncChanName(idx){
+  if(idx < 0 || idx >= currentM3uEntries.length) return;
+  const e = currentM3uEntries[idx];
+  const matched = _m3uOptions.find(o => o.tvg_id === e.tvg_id && o.tvg_id !== '9999');
+  if(matched){
+    e.display_name = matched.tvg_name;
+    renderM3uTable(currentM3uEntries, _m3uOptions);
+    autoSaveM3u();
+    showToast('已同步为 EPG 频道名: ' + matched.tvg_name, 'success');
+  }
+}
+
 function m3uSelectOne(i, checked){
   if(checked) _m3uSel.add(i); else _m3uSel.delete(i)
   const box = $('m3uAllBox')
@@ -2471,6 +2549,7 @@ let _m3uPanelEl=null
 
 function m3uCloseDropdown(){
  if(_m3uPanelEl){ _m3uPanelEl.remove(); _m3uPanelEl=null }
+ document.removeEventListener('click', _m3uDocClick)
  _m3uOpen={type:null, idx:-1}
 }
 
@@ -2600,7 +2679,7 @@ function m3uPickIcon(i,name){
   if(!f) return
   const full=m3uIconFullUrl(f.url)
   if(m3uIsLanHost(location.host)){
-   alert('本页面是从局域网打开，保存的是局域网链接地址，外网无法访问，请用公网域名重新打开本页面，如只在局域网内使用，请忽略本提示。')
+      showToast('本页面是从局域网打开，保存的是局域网链接地址，外网无法访问，请用公网域名重新打开本页面，如只在局域网内使用，请忽略本提示。', 'info', 5000)
   }
   currentM3uEntries[i].tvg_logo=full
  }
@@ -2858,7 +2937,21 @@ function switchLogCategory(cat){
 }
 
 // ==================== 认证 ====================
-if(!window.fetch){};const _origFetch=window.fetch;window.fetch=function(u,o){o=o||{};o.credentials=o.credentials||'include';return _origFetch.call(this,u,o)}
+const _origFetch = window.fetch;
+window.fetch = function(u, o) {
+  o = o || {};
+  o.credentials = o.credentials || 'include';
+  return _origFetch.call(this, u, o).then(function(r) {
+    if (r.status === 401 && !/\/api\/auth\//.test(String(u))) {
+      var ov = document.getElementById('loginOverlay');
+      if (ov) ov.classList.remove('hidden');
+      if (typeof showToast === 'function') {
+        try { showToast('登录已过期，请重新登录', 'error'); } catch(_) {}
+      }
+    }
+    return r;
+  });
+};
 
 async function checkAuth(){
  try{
@@ -2916,6 +3009,7 @@ function closeModal(){
   if (!m) return;
   m.classList.remove('active');
   m.style.zIndex = '';
+  m.onclick = null;   // 清掉 customConfirm 残留的遮罩点击处理器
 }
 
 function jumpToTelecom(){

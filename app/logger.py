@@ -1,8 +1,15 @@
 """日志模块 - 支持分类和全局日志"""
 import datetime
+import threading
 from pathlib import Path
 
 from . import config
+
+# ── 模块级线程锁 ──
+# 保护 Logger 实例内部 _logs / _global_buffer 的读写。
+# 反推 key 的后台线程、定时任务、HTTP 请求可能同时写日志，
+# 没有锁时极小概率丢日志或列表长度错乱。
+_log_lock = threading.Lock()
 
 
 class Logger:
@@ -96,24 +103,25 @@ class Logger:
         safe_msg = str(message).replace("\r", "\\r").replace("\n", "\\n")
         log_line = f"[{timestamp}] {safe_msg}"
 
-        # 内存缓存
-        if date_str not in self._logs:
-            self._logs[date_str] = []
-        self._logs[date_str].append(log_line)
+        # 内存缓存 + 环形缓冲（加锁保护，防多线程写坏）
+        with _log_lock:
+            if date_str not in self._logs:
+                self._logs[date_str] = []
+            self._logs[date_str].append(log_line)
 
         # 全局环形缓冲
-        entry = {
-            "timestamp": timestamp,
-            "message": safe_msg,
-            "category": category,
-            "date": date_str,
-            "line": log_line,
-        }
-        self._global_buffer.append(entry)
-        if len(self._global_buffer) > self._max_global:
-            self._global_buffer.pop(0)
+            entry = {
+                "timestamp": timestamp,
+                "message": safe_msg,
+                "category": category,
+                "date": date_str,
+                "line": log_line,
+            }
+            self._global_buffer.append(entry)
+            if len(self._global_buffer) > self._max_global:
+                self._global_buffer.pop(0)
 
-        # 写文件
+        # 写文件（O_APPEND 本身原子，放锁外避免磁盘 IO 阻塞其他线程）
         log_path = self._get_log_path(date_str)
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)

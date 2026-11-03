@@ -30,6 +30,7 @@ services:
     stop_grace_period: 30s
     ports:
       - "${WEB_PORT:-5673}:80"
+      - "${RTSP_PROXY_PORT:-554}:554"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       PYTHONUNBUFFERED: "1"
