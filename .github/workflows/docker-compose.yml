@@ -23,19 +23,15 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      # 自动提取版本号并生成 Docker 标签
       - name: 提取 Docker 元数据
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ secrets.DOCKERHUB_USERNAME }}/epg-server
           tags: |
-            # 如果是打 Tag 发版（如 v1.2.3），自动生成 1.2.3 和 1.2
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # 只有打 Tag 发版时，才更新 latest 标签（日常 push 不会覆盖）
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            # 日常 push 代码时，生成 sha 标签以便追溯
             type=sha
 
       - name: 构建并推送 Docker 镜像
@@ -43,13 +39,12 @@ jobs:
         with:
           context: .
           push: true
-          # 强制指定 amd64 架构，适配群晖/飞牛等主流 NAS，防止 M系列 Mac 推送导致不兼容
           platforms: linux/amd64
-          # 传入你在 compose 里定义的构建参数（使用国内镜像源加速）
+          # 【关键修改】覆盖 Dockerfile 默认的国内源，使用海外官方源
           build-args: |
-            APT_MIRROR=mirrors.aliyun.com
-            PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-            PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+            APT_MIRROR=deb.debian.org
+            PIP_INDEX_URL=https://pypi.org/simple
+            PIP_TRUSTED_HOST=
           # 使用上一步自动生成的标签
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
