@@ -1,42 +1,58 @@
-name: Build ZTE and Push Docker Image
+name: 构建 ZTE 并推送 Docker 镜像
 
 on:
   push:
     branches: [ "ZTE" ]
-  workflow_dispatch:
+    tags: [ 'v*' ] # 当推送以 v 开头的标签（或页面发布 Release）时触发
+  workflow_dispatch: # 允许在页面上手动点击按钮触发
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: 检出代码仓库
         uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
+      - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: 登录 Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      # 自动提取版本号并生成 Docker 标签
+      - name: 提取 Docker 元数据
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKERHUB_USERNAME }}/epg-server
+          tags: |
+            # 如果是打 Tag 发版（如 v1.2.3），自动生成 1.2.3 和 1.2
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            # 只有打 Tag 发版时，才更新 latest 标签（日常 push 不会覆盖）
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            # 日常 push 代码时，生成 sha 标签以便追溯
+            type=sha
+
+      - name: 构建并推送 Docker 镜像
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
           # 强制指定 amd64 架构，适配群晖/飞牛等主流 NAS，防止 M系列 Mac 推送导致不兼容
           platforms: linux/amd64
-          # 传入你在 compose 里定义的构建参数
+          # 传入你在 compose 里定义的构建参数（使用国内镜像源加速）
           build-args: |
             APT_MIRROR=mirrors.aliyun.com
             PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
             PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
-          # 注意这里改成你自己的 Docker Hub 用户名
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/epg-server:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/epg-server:${{ github.sha }}
+          # 使用上一步自动生成的标签
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 使用 GitHub Actions 缓存加快构建速度
           cache-from: type=gha
           cache-to: type=gha,mode=max
