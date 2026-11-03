@@ -168,7 +168,6 @@ def build_xml(
                     else:
                         external_json_used += 1
                     try:
-                    try:
                         with open(json_path, "r", encoding="utf-8") as f:
                             data = json.load(f)
                         prog_list = data.get("schedules", []) or data.get("programmes", [])
