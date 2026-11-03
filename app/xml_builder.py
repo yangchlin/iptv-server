@@ -95,7 +95,7 @@ def build_xml(
         # ★ 主 EPG 文件名（用户可配置，默认 epg.xml）
         epg_name = config.get_epg_filename()
         if log_callback:
-            log_callback(f"[XML] 开始生成 XML（平台: {config.platform_label(active)}，文件名: {epg_name}）...")
+            log_callback(f"[合并] 开始合并生成主 XML（平台: {config.platform_label(active)}，文件名: {epg_name}）...")
 
         epg_channels = config.get_epg_channels()
         extracts = config.get_epg_extracts()
@@ -122,6 +122,8 @@ def build_xml(
         json_found = 0
         json_parsed = 0
         json_errors = 0
+        telecom_json_used = 0   # 新增：记录用了几个电信数据
+        external_json_used = 0  # 新增：记录用了几个外部数据
 
         total_epg = len(epg_channels)
         for idx, ch in enumerate(epg_channels, 1):
@@ -161,6 +163,11 @@ def build_xml(
 
                 if json_path.exists():
                     json_found += 1
+                    if json_path == telecom_path:
+                        telecom_json_used += 1
+                    else:
+                        external_json_used += 1
+                    try:
                     try:
                         with open(json_path, "r", encoding="utf-8") as f:
                             data = json.load(f)
@@ -197,14 +204,15 @@ def build_xml(
             if idx % 10 == 0 or idx == total_epg:
                 if log_callback:
                     log_callback(
-                        f"[XML]   [{idx}/{total_epg}] 已处理 {ch_with_data} 个有数据的频道, "
+                        f"[合并]   [{idx}/{total_epg}] 已处理 {ch_with_data} 个有数据的频道, "
                         f"{ch_without_data} 个无数据频道"
                     )
 
         if log_callback:
             log_callback(
-                f"[XML] 频道处理完成: {ch_with_data} 个有节目, {ch_without_data} 个无数据, "
-                f"JSON文件: 找到{json_found}个, 解析成功{json_parsed}个, 失败{json_errors}个"
+                f"[合并] 频道处理完成: {ch_with_data} 个有节目, {ch_without_data} 个无数据。"
+                f"数据源: 电信JSON {telecom_json_used} 个, 外部JSON {external_json_used} 个。"
+                f"共找到 {json_found} 个文件, 解析成功 {json_parsed} 个"
             )
 
         lines.append('</tv>')
@@ -270,9 +278,9 @@ def build_xml(
 
         elapsed = int(time.time() - _start)
         if log_callback:
-            log_callback(f"[XML] 生成完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒 → {epg_name}")
+            log_callback(f"[合并] 主 XML 生成完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒 → {epg_name}")
         if progress_callback:
-            progress_callback(f"[XML] 完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒")
+            progress_callback(f"[合并] 完成: {channel_count} 频道, {programme_count} 节目, 耗时 {elapsed}秒")
 
     except Exception as e:
         result["error"] = str(e)
